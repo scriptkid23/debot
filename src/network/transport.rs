@@ -1,51 +1,39 @@
 use libp2p::{
-    core::upgrade,
-    identity::{Keypair, PeerId},
-    mplex::MplexConfig,
-    noise::{NoiseConfig, X25519Spec},
-    tcp::TcpConfig,
+    core::{muxing::StreamMuxerBox, transport::Boxed, upgrade::Version},
+    dns::DnsConfig,
+    identity::Keypair,
+    mplex, noise::{self, NoiseConfig, X25519Spec, Keypair as NoiseKeypair},
+    tcp::Config,
     websocket::WsConfig,
-    yamux::YamuxConfig,
-    Swarm, Transport,
+    yamux, Transport,
+    Multiaddr,
+    PeerId,
 };
 use std::error::Error;
-use tokio::io::AsyncWriteExt;
 
-pub fn build_transport(local_keypair: Keypair) -> Result<impl Transport, Box<dyn Error>> {
-    // Generate Noise keypair from libp2p identity Keypair
-    let noise_keys = NoiseKeypair::<X25519Spec>::new()
-        .into_authentic(&local_keypair)
-        .map_err(|e| format!("Failed to create authentic keypair: {}", e))?;
+/// Sets up the transport protocols (TCP, WebSocket) with authentication and multiplexing.
+pub fn create_transport(local_keypair: Keypair) -> Result<Boxed<(PeerId, StreamMuxerBox)>, Box<dyn Error>> {
+    // Generate a keypair for noise protocol (for encryption/authentication)
+    let noise_keys = NoiseKeypair::<X25519Spec>::new().into_authentic(&local_keypair)?;
 
-    // TCP transport configuration
+    // Set up TCP transport
     let tcp_transport = TcpConfig::new();
 
-    // WebSocket transport configuration
-    let ws_transport = WsConfig::new(tcp_transport.clone());
+    // Set up WebSocket transport using TCP as a base layer
+    let ws_transport = WsConfig::new(TcpConfig::new());
 
-    // Apply Noise (encryption) and Yamux (multiplexing) upgrades
-    let authenticated_tcp_transport = tcp_transport
-        .clone()
-        .upgrade(upgrade::Version::V1)
-        .authenticate(NoiseConfig::xx(noise_keys.clone()))
-        .multiplex(YamuxConfig::default())
+    // Combine TCP and WebSocket transports
+    let base_transport = tcp_transport.or_transport(ws_transport);
+
+    // Use DNS to resolve addresses
+    let dns_transport = DnsConfig::new(base_transport)?;
+
+    // Apply noise protocol for authentication and encryption
+    let authenticated_transport = dns_transport
+        .upgrade(Version::V1)
+        .authenticate(NoiseConfig::xx(noise_keys).into_authenticated())
+        .multiplex(yamux::YamuxConfig::default()) // or mplex::MplexConfig::new()
         .boxed();
 
-    let authenticated_ws_transport = ws_transport
-        .upgrade(upgrade::Version::V1)
-        .authenticate(NoiseConfig::xx(noise_keys))
-        .multiplex(MplexConfig::new())
-        .boxed();
-
-    // Combine both transports with fallback between TCP and WebSocket
-    Ok(authenticated_tcp_transport.or(authenticated_ws_transport))
-}
-
-// Initialize and return a Swarm for managing peer connections
-pub fn create_swarm(local_keypair: Keypair) -> Swarm {
-    let local_peer_id = PeerId::from(local_keypair.public());
-    let transport = build_transport(local_keypair).expect("Failed to create transport");
-
-    // Set up the swarm with the specified transport
-    Swarm::new(transport, local_peer_id)
+    Ok(authenticated_transport)
 }
