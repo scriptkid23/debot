@@ -4,7 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use tokio::{io, io::AsyncBufReadExt, select};
+use tokio::{io, select};
 
 // We create a custom network behaviour that combines Gossipsub and Mdns.
 #[derive(NetworkBehaviour)]
@@ -13,7 +13,7 @@ struct MyBehaviour {
     mdns: mdns::tokio::Behaviour,
 }
 
-async fn startup() -> Result<(), Box<dyn Error>> {
+pub async fn startup() -> Result<(), Box<dyn Error>> {
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
