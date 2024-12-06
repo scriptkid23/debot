@@ -15,7 +15,11 @@ reqwest = { version = "0.12.5", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 
+async-trait = "0.1.83"
+
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 actix = "0.13"
 libp2p-identity = "0.2.9"
+
+tokio-util = "0.7.13"

@@ -1,21 +1,37 @@
+use async_trait::async_trait;
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, mdns, noise,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    mdns, noise, ping,
+    request_response::{self, Codec, ProtocolSupport, ResponseChannel},
+    swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
-use std::{
-    collections::hash_map::DefaultHasher,
-    error::Error,
-    hash::{Hash, Hasher},
-};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, pin::Pin, time::Duration};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{io, select};
 
-use tokio::{io, io::AsyncBufReadExt, select};
+// Define a simple protocol
+#[derive(Debug, Clone)]
+struct MessageProtocol;
+
+// Define request and response types
+#[derive(Debug, Clone)]
+struct MessageRequest(String);
+
+#[derive(Debug, Clone)]
+struct MessageResponse(String);
+
+// Implement the codec for our protocol
+#[derive(Clone)]
+struct MessageCodec;
+
+impl Codec for MessageCodec {}
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
     mdns: mdns::tokio::Behaviour,
+    ping: ping::Behaviour,
+    request_response: request_response::Behaviour<MessageCodec>,
 }
 
 async fn try_dial_peer(swarm: &mut Swarm<Behaviour>, peer_address: Multiaddr) {
@@ -27,7 +43,7 @@ async fn try_dial_peer(swarm: &mut Swarm<Behaviour>, peer_address: Multiaddr) {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -38,7 +54,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_behaviour(|key| {
             let mdns =
                 mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
-            Ok(Behaviour { mdns })
+
+            let ping = ping::Behaviour::default();
+
+            let request_response = request_response::Behaviour::new(protocols, cfg);
+            Ok(Behaviour {
+                mdns,
+                ping,
+                request_response,
+            })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -56,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                         try_dial_peer(&mut swarm, peer_address.clone()).await;
 
-                    
+
                         let _ = swarm.select_next_some().await;
                         //TODO:
 
@@ -67,6 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("mDNS discover peer has expired: {peer_id}");
                     }
                 },
+
 
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
