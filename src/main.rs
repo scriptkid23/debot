@@ -1,13 +1,14 @@
 use async_trait::async_trait;
-use futures::StreamExt;
+
+use futures::{AsyncRead, StreamExt};
 use libp2p::{
     mdns, noise, ping,
     request_response::{self, Codec, ProtocolSupport, ResponseChannel},
     swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
-use std::{collections::HashMap, pin::Pin, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::{io, select};
 
 // Define a simple protocol
@@ -25,7 +26,31 @@ struct MessageResponse(String);
 #[derive(Clone)]
 struct MessageCodec;
 
-impl Codec for MessageCodec {}
+impl Codec for MessageCodec {
+    type Protocol = &'static str;
+    type Request = MessageRequest;
+    type Response = MessageResponse;
+
+    fn read_request<'life0, 'life1, 'life2, 'async_trait, T>(
+        &'life0 mut self,
+        _protocol: &'life1 Self::Protocol,
+        io: &'life2 mut T,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Request, std::io::Error>> + Send + 'async_trait>>
+    where
+        T: tokio::io::AsyncRead + Unpin + Send + 'async_trait,
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let mut buf = Vec::new();
+
+            io.read_to_end(&mut buf).await?;
+            Ok(MessageRequest(String::from_utf8_lossy(&buf).into_owned()))
+        })
+    }
+}
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
