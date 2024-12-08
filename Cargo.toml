@@ -23,3 +23,5 @@ actix = "0.13"
 libp2p-identity = "0.2.9"
 
 tokio-util = "0.7.13"
+serde_json = "1.0.133"
+bincode = "1.3"
