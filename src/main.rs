@@ -1,7 +1,10 @@
+use actix::fut::ok;
 use async_trait::async_trait;
 
 use futures::prelude::*;
 use futures::{future::poll_fn, StreamExt};
+use libp2p::request_response::Config;
+use libp2p::swarm::SwarmEvent;
 use libp2p::{
     mdns, noise, ping,
     request_response::{self, Codec, ProtocolSupport, ResponseChannel},
@@ -25,7 +28,7 @@ struct MessageRequest(String);
 struct MessageResponse(String);
 
 // Implement the codec for our protocol
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct MessageCodec;
 
 impl Codec for MessageCodec {
@@ -211,7 +214,62 @@ async fn try_dial_peer(swarm: &mut Swarm<Behaviour>, peer_address: Multiaddr) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+    // Generate a random keypair for this peer.
+    let id_keys = libp2p::identity::Keypair::generate_ed25519();
+    let peer_id = PeerId::from(id_keys.public());
+    println!("Local peer id: {peer_id}");
 
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
+        .with_behaviour(|key| {
+            let mdns =
+                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
+
+            let protocols = vec![("message_protocol", ProtocolSupport::Full)];
+
+            let config = Config::default();
+            let request_response = request_response::Behaviour::new(protocols, config);
+
+            Ok(Behaviour {
+                mdns,
+                request_response,
+            })
+        })?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .build();
+
+    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    loop {
+        select! {
+            event = swarm.select_next_some() => match event {
+                SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                    for (peer_id, _multiaddr) in list {
+                        println!("mDNS discovered a new peer: {peer_id}");
+                    }
+                },
+                SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                    for (peer_id, _multiaddr) in list {
+                        println!("mDNS discover peer has expired: {peer_id}");
+                    }
+                },
+
+                SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
+                  print!("{:?}", event);
+                },
+               //TODO: add request- response event
+
+
+                SwarmEvent::NewListenAddr { address, .. } => {
+                    println!("Local node is listening on {address}");
+                }
+                _ => {}
+            }
+        }
+    }
     // You need to await the startup function to execute the future it returns
 }
