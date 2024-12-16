@@ -252,6 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("mDNS discovered a new peer: {peer_id}");
                     }
                 },
+
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                     for (peer_id, _multiaddr) in list {
                         println!("mDNS discover peer has expired: {peer_id}");
@@ -259,10 +260,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
 
                 SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
-                  print!("{:?}", event);
-                },
-               //TODO: add request- response event
+                    match event {
+                        request_response::Event::Message { peer, message } => {
+                            match message {
+                                request_response::Message::Request { request, channel, .. } => {
+                                    println!("Received request from {}: {:?}", peer, request);
 
+                                    let response = MessageResponse("Response to your request".to_string());
+                                    swarm.behaviour_mut().request_response.send_response(channel, response).unwrap();
+                                }
+                                request_response::Message::Response { request_id, response } => {
+                                    println!("Received response for request {}: {:?}", request_id, response);
+
+                                }
+                            }
+                        }
+                        request_response::Event::OutboundFailure { peer, request_id, error } => {
+                            println!("Outbound failure for request {} to {}: {:?}", request_id, peer, error);
+                        }
+                        request_response::Event::InboundFailure { peer, request_id, error } => {
+                            println!("Inbound failure from {} for request {}: {:?}", peer, request_id, error);
+                        }
+                        request_response::Event::ResponseSent { peer, request_id } => {
+                            println!("Response sent to {} for request {}", peer, request_id);
+                        }
+                    }
+                },
 
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
