@@ -1,24 +1,21 @@
-use actix::fut::ok;
-use async_trait::async_trait;
+use std::collections::HashSet;
 
 use futures::prelude::*;
 use futures::{future::poll_fn, StreamExt};
 use libp2p::request_response::Config;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{
-    mdns, noise, ping,
-    request_response::{self, Codec, ProtocolSupport, ResponseChannel},
+    mdns, noise,
+    request_response::{self, Codec, ProtocolSupport},
     swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind};
-use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::{pin::Pin, time::Duration};
+
 use tokio::{io, select};
-// Define a simple protocol
-#[derive(Debug, Clone)]
-struct MessageProtocol;
+use tokio_util::codec::{FramedRead, LinesCodec};
 
 // Define request and response types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +52,15 @@ impl Codec for MessageCodec {
         'life2: 'async_trait,
         Self: 'async_trait,
     {
-        //TODO: code here
+        if *protocol != "/message_protocol/1" {
+            return Box::pin(async {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid protocol",
+                ))
+            });
+        }
+
         Box::pin(async move {
             let mut buffer = vec![0u8; 1024];
             let mut total_size = 0;
@@ -88,7 +93,7 @@ impl Codec for MessageCodec {
 
     fn write_request<'life0, 'life1, 'life2, 'async_trait, T>(
         &'life0 mut self,
-        _protocol: &'life1 Self::Protocol,
+        protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
         req: Self::Request,
     ) -> ::core::pin::Pin<
@@ -106,6 +111,15 @@ impl Codec for MessageCodec {
         'life2: 'async_trait,
         Self: 'async_trait,
     {
+        if *protocol != "/message_protocol/1" {
+            return Box::pin(async {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid protocol",
+                ))
+            });
+        }
+
         Box::pin(async move {
             let bytes = bincode::serialize(&req)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
@@ -135,6 +149,14 @@ impl Codec for MessageCodec {
         'life2: 'async_trait,
         Self: 'async_trait,
     {
+        if *protocol != "/message_protocol/1" {
+            return Box::pin(async {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid protocol",
+                ))
+            });
+        }
         Box::pin(async move {
             let bytes = bincode::serialize(&res)
                 .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
@@ -166,6 +188,14 @@ impl Codec for MessageCodec {
         'life2: 'async_trait,
         Self: 'async_trait,
     {
+        if *protocol != "/message_protocol/1" {
+            return Box::pin(async {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid protocol",
+                ))
+            });
+        }
         Box::pin(async move {
             let mut buffer = vec![0u8; 1024];
             let mut total_size = 0;
@@ -230,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mdns =
                 mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
 
-            let protocols = vec![("message_protocol", ProtocolSupport::Full)];
+            let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
 
             let config = Config::default();
             let request_response = request_response::Behaviour::new(protocols, config);
@@ -244,12 +274,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+    // Đọc stdin
+    let stdin = tokio::io::stdin();
+    let mut stdin = FramedRead::new(stdin, LinesCodec::new());
+
+    println!("Type 'send <message>' to send a message to peers:");
+
     loop {
         select! {
+            line = stdin.next() => match line {
+                Some(Ok(line)) => {
+                    if let Some(message) = line.strip_prefix("send ") {
+                        println!("Sending...: {}", message);
+                        let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
+
+                        println!("{:?}", peers);
+
+
+                        if peers.is_empty() {
+                                print!("Nothing!")
+                        }else {
+                            for peer in peers {
+                                let request = MessageRequest(message.to_string());
+                                swarm.behaviour_mut().request_response.send_request(&peer, request);
+                            }
+                        }
+                    }
+                }
+                Some(Err(e)) => eprintln!("Error reading from stdin: {:?}", e),
+                None => break,
+            },
+
+            //TODO: send a message and another peer will receive and show the message
             event = swarm.select_next_some() => match event {
                 SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                    for (peer_id, _multiaddr) in list {
+                    for (peer_id, multiaddr) in list {
                         println!("mDNS discovered a new peer: {peer_id}");
+                        try_dial_peer(&mut swarm, multiaddr).await;
                     }
                 },
 
@@ -294,5 +356,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    Ok(())
     // You need to await the startup function to execute the future it returns
 }
