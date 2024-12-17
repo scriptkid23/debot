@@ -1,42 +1,30 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    time::Duration,
-};
-
+use super::codec::MessageCodec;
 use libp2p::{
-    gossipsub::{self, MessageAuthenticity},
     mdns,
+    request_response::{self, Config, ProtocolSupport},
     swarm::NetworkBehaviour,
 };
-use tokio::io;
+use std::error::Error;
 
 #[derive(NetworkBehaviour)]
-pub struct MyBehaviour {
-    pub gossipsub: gossipsub::Behaviour,
+pub struct Behaviour {
     pub mdns: mdns::tokio::Behaviour,
+    pub request_response: request_response::Behaviour<MessageCodec>,
 }
 
-impl MyBehaviour {
-    pub fn new(key: &libp2p::identity::Keypair) -> Result<Self, Box<dyn std::error::Error>> {
-        let message_id_fn = |message: &gossipsub::Message| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            gossipsub::MessageId::from(s.finish().to_string())
-        };
-
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(10))
-            .validation_mode(gossipsub::ValidationMode::Strict)
-            .message_id_fn(message_id_fn)
-            .build()
-            .map_err(|msg| io::Error::new(io::ErrorKind::Other, msg))?;
-
-        let gossipsub =
-            gossipsub::Behaviour::new(MessageAuthenticity::Signed(key.clone()), gossipsub_config)?;
-
+impl Behaviour {
+    pub fn new(key: &libp2p::identity::Keypair) -> Result<Self, Box<dyn Error>> {
         let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
 
-        Ok(MyBehaviour { gossipsub, mdns })
+        let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
+
+        let config = Config::default();
+
+        let request_response = request_response::Behaviour::new(protocols, config);
+
+        Ok(Behaviour {
+            mdns,
+            request_response,
+        })
     }
 }
