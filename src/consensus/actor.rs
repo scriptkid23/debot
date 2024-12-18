@@ -1,7 +1,8 @@
 use actix::prelude::*;
 
-pub struct ConsensusActor {}
+pub struct Consensus {
+}
 
-impl Actor for ConsensusActor {
+impl Actor for Consensus {
     type Context = Context<Self>;
 }
