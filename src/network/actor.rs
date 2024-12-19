@@ -1,12 +1,10 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use actix::prelude::*;
-use anyhow::Ok;
+use futures::StreamExt;
 use libp2p::{noise, tcp, yamux, PeerId, Swarm};
 
-use crate::consensus::actor::Consensus;
-
-use super::behaviour::{Behaviour, BehaviourEvent};
+use super::behaviour::Behaviour;
 
 /// Messages to send to the actor
 #[derive(Message)]
@@ -24,30 +22,57 @@ pub enum NetworkEvent {
     InboundFailure { peer: PeerId },
 }
 
-/// Requesting the swarm from the actor (for internal use)
-struct GetSwarm;
-
-impl Message for GetSwarm {
-    type Result = Swarm<Behaviour>;
-}
-
-/// A message carrying a `SwarmEvent`
-struct SwarmEventMessage(libp2p::swarm::SwarmEvent<BehaviourEvent>);
-
-impl Message for SwarmEventMessage {
-    type Result = ();
-}
-
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
-    peer_ids: Vec<PeerId>,
+    swarm: Option<Swarm<Behaviour>>,
 }
 
 impl Actor for Network {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("Actor is alive");
+        let id_keys = libp2p::identity::Keypair::generate_ed25519();
+        let peer_id = PeerId::from(id_keys.public());
+
+        println!("Local peer id: {peer_id}");
+
+        let behaviour = Behaviour::new(&id_keys).expect("Failed to create behaviour");
+
+        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
+            .expect("msg")
+            .with_behaviour(|_| behaviour)
+            .expect("msg")
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .build();
+
+        // Just run listen_on
+        if let Err(e) = swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().expect("Invalid multiaddr")) {
+            eprintln!("Failed to start listening: {:?}", e);
+        } else {
+            println!("Listening on all interfaces on a random port");
+        }
+        // Handle swarm events
+        ctx.spawn(
+            async move {
+                loop {
+                    if let Some(event) = swarm.next().await {
+                        match event {
+                            libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } => {
+                                println!("Listening on {:?}", address);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            .into_actor(self),
+        );
     }
 }
 
@@ -60,30 +85,6 @@ impl Handler<SendMessage> for Network {
 
 impl Default for Network {
     fn default() -> Self {
-        Network {
-            peer_ids: Vec::new(),
-        }
-    }
-}
-
-impl Network {
-    pub fn new() {
-        let id_keys = libp2p::identity::Keypair::generate_ed25519();
-        let peer_id = PeerId::from(id_keys.public());
-
-        println!("Local peer id: {peer_id}");
-
-        // let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-        //     .with_tokio()
-        //     .with_tcp(
-        //         tcp::Config::default(),
-        //         noise::Config::new,
-        //         yamux::Config::default,
-        //     )?
-        //     .with_behaviour(Behaviour::new(&key))?
-        //     .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
-        //     .build();
-
-        // Ok(Libp2pActor { id_keys, swarm })
+        Network { swarm: None }
     }
 }
