@@ -20,7 +20,7 @@ impl Actor for Consensus {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("Consensus actor started");
+        //TODO: start consensus layer
     }
 }
 impl Default for Consensus {

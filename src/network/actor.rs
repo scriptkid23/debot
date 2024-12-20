@@ -41,9 +41,6 @@ impl Actor for Network {
         let id_keys = libp2p::identity::Keypair::generate_ed25519();
         let peer_id = PeerId::from(id_keys.public());
 
-        println!("Network actor started");
-        println!("Local peer id: {peer_id}");
-
         let behaviour = Behaviour::new(&id_keys).expect("Failed to create behaviour");
 
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
