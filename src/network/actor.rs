@@ -4,6 +4,8 @@ use actix::prelude::*;
 use futures::StreamExt;
 use libp2p::{noise, tcp, yamux, PeerId, Swarm};
 
+use crate::consensus::actor::Consensus;
+
 use super::behaviour::Behaviour;
 
 /// Messages to send to the actor
@@ -22,9 +24,14 @@ pub enum NetworkEvent {
     InboundFailure { peer: PeerId },
 }
 
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SetConsensusAddr(pub Addr<Consensus>);
+
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
     swarm: Option<Swarm<Behaviour>>,
+    consensus_addr: Option<Addr<Consensus>>,
 }
 
 impl Actor for Network {
@@ -34,6 +41,7 @@ impl Actor for Network {
         let id_keys = libp2p::identity::Keypair::generate_ed25519();
         let peer_id = PeerId::from(id_keys.public());
 
+        println!("Network actor started");
         println!("Local peer id: {peer_id}");
 
         let behaviour = Behaviour::new(&id_keys).expect("Failed to create behaviour");
@@ -83,8 +91,21 @@ impl Handler<SendMessage> for Network {
     }
 }
 
-impl Default for Network {
-    fn default() -> Self {
-        Network { swarm: None }
+impl Handler<SetConsensusAddr> for Network {
+    type Result = ();
+
+    fn handle(&mut self, msg: SetConsensusAddr, _ctx: &mut Self::Context) -> Self::Result {
+        self.consensus_addr = Some(msg.0);
     }
 }
+
+impl Default for Network {
+    fn default() -> Self {
+        Network {
+            swarm: None,
+            consensus_addr: None,
+        }
+    }
+}
+
+impl Network {}

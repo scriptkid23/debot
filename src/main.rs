@@ -1,10 +1,21 @@
 use actix::prelude::*;
-use debot::network::actor::Network;
+use debot::{
+    consensus::actor::{Consensus, SetNetworkAddr},
+    network::actor::{Network, SetConsensusAddr},
+};
 
 #[actix_rt::main]
 async fn main() {
     // Start the network actor
-    let _network = Network::default().start();
+    let network = Network::default().start();
+
+    let consensus = Consensus::default().start();
+
+    // Send the network address to the consensus actor
+    consensus.do_send(SetNetworkAddr(network.clone()));
+
+    // Send the consensus address to the network actor
+    network.do_send(SetConsensusAddr(consensus.clone()));
 
     // Keep the main task running
     println!("Press Ctrl+C to exit");
@@ -12,4 +23,3 @@ async fn main() {
         .await
         .expect("Failed to listen for ctrl+c");
 }
-
