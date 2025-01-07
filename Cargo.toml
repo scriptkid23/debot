@@ -28,3 +28,4 @@ bincode = "1.3"
 
 anyhow = "1.0.94"
 actix-rt = "2.5.0"
+rand = "0.8"

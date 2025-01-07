@@ -2,9 +2,9 @@ use std::{collections::HashSet, time::Duration};
 
 use actix::prelude::*;
 use futures::{channel::mpsc, StreamExt};
-use libp2p::{mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, Swarm};
-
-use crate::{consensus::actor::Consensus, network::{behaviour::BehaviourEvent, codec::MessageRequest}};
+use libp2p::{mdns, noise, request_response, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm};
+use tokio::{io, select};
+use crate::{consensus::actor::Consensus, network::{behaviour::BehaviourEvent, codec::{MessageRequest, MessageResponse}}};
 
 use super::behaviour::Behaviour;
 
@@ -66,66 +66,67 @@ impl Actor for Network {
             println!("Listening on all interfaces on a random port");
         }
 
-        let (command_sender, mut command_receiver) = mpsc::channel(10);
+        let (command_sender, mut command_receiver) = mpsc::channel(32);
         self.command_sender = Some(command_sender);
 
         ctx.spawn(
             async move {
                 loop {
-                    futures::select! {
-                        event = swarm.next() => {
-                            if let Some(event) = event {
-                                match event {
-                                    libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } => {
-                                        println!("Listening on {:?}", address);
-                                    }
+                    select! {
+                        event = swarm.select_next_some() => match event {
+                            SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                                for (peer_id, multiaddr) in list {
+                                    println!("mDNS discovered a new peer: {peer_id}");
+                                    if !swarm.is_connected(&peer_id) {
+                                        try_dial_peer(&mut swarm, multiaddr).await;
 
-                                    libp2p::swarm::SwarmEvent::Behaviour(BehaviourEvent::Mdns(
-                                        mdns::Event::Discovered(list),
-                                    )) => {
-                                        for (peer_id, multiaddr) in list {
-                                            println!("mDNS discovered a new peer: {peer_id}");
-                                            try_dial_peer(&mut swarm, multiaddr).await;
-                                        }
                                     }
-
-                                    libp2p::swarm::SwarmEvent::Behaviour(BehaviourEvent::Mdns(
-                                        mdns::Event::Expired(list),
-                                    )) => {
-                                        for (peer_id, _multiaddr) in list {
-                                            println!("mDNS discover peer has expired: {peer_id}");
-                                        }
-                                    }
-
-                                    libp2p::swarm::SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
-                                        match event {
-                                            request_response::Event::Message { peer, message } => {
-                                                match message {
-                                                    request_response::Message::Request { request, channel, .. } => {
-                                                        println!("Received request from {}: {:?}", peer, request);                     
-                                                    }
-                                                    request_response::Message::Response { request_id, response } => {
-                                                        println!("Received response for request {}: {:?}", request_id, response);
-                    
-                                                    }
-                                                }
-                                            }
-                                            request_response::Event::OutboundFailure { peer, request_id, error } => {
-                                                println!("Outbound failure for request {} to {}: {:?}", request_id, peer, error);
-                                            }
-                                            request_response::Event::InboundFailure { peer, request_id, error } => {
-                                                println!("Inbound failure from {} for request {}: {:?}", peer, request_id, error);
-                                            }
-                                            request_response::Event::ResponseSent { peer, request_id } => {
-                                                println!("Response sent to {} for request {}", peer, request_id);
-                                            }
-                                        }
-                                    },
-                                    // Add other event handling here
-                                    _ => {}
                                 }
+                            },
+                            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                                println!("Connection established with {peer_id}");
+                                // Lúc này chắc chắn is_connected() = true
                             }
-                        }
+            
+                            SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                                for (peer_id, _multiaddr) in list {
+                                    println!("mDNS discover peer has expired: {peer_id}");
+                                }
+                            },
+            
+                            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
+                                match event {
+                                    request_response::Event::Message { peer, message } => {
+                                        match message {
+                                            request_response::Message::Request { request, channel, .. } => {
+                                                println!("Received request from {}: {:?}", peer, request);
+            
+                                                let response = MessageResponse("Response to your request".to_string());
+                                                swarm.behaviour_mut().request_response.send_response(channel, response).unwrap();
+                                            }
+                                            request_response::Message::Response { request_id, response } => {
+                                                println!("Received response for request {}: {:?}", request_id, response);
+            
+                                            }
+                                        }
+                                    }
+                                    request_response::Event::OutboundFailure { peer, request_id, error } => {
+                                        println!("Outbound failure for request {} to {}: {:?}", request_id, peer, error);
+                                    }
+                                    request_response::Event::InboundFailure { peer, request_id, error } => {
+                                        println!("Inbound failure from {} for request {}: {:?}", peer, request_id, error);
+                                    }
+                                    request_response::Event::ResponseSent { peer, request_id } => {
+                                        println!("Response sent to {} for request {}", peer, request_id);
+                                    }
+                                }
+                            },
+            
+                            SwarmEvent::NewListenAddr { address, .. } => {
+                                println!("Local node is listening on {address}");
+                            }
+                            _ => {}
+                        },
                         command = command_receiver.next() => {
                             if let Some(cmd) = command {
                                 match cmd {
@@ -133,9 +134,14 @@ impl Actor for Network {
                                         println!("Sending message: {}", msg);
                                         let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
                                         for peer in peers {
-                                            let request = MessageRequest(msg.clone());
-                                            let request_id = swarm.behaviour_mut().request_response.send_request(&peer, request);
-                                            println!("Sent request to {}: {:?}", peer, request_id);
+                                            if swarm.is_connected(&peer) {
+                                                println!("Sending to connected peer: {:?}", peer);
+                                                let request = MessageRequest(msg.clone());
+                                                let request_id = swarm.behaviour_mut().request_response.send_request(&peer, request);
+                                                println!("Sent request to {}: {:?}", peer, request_id);
+                                            } else {
+                                                println!("Peer not connected: {:?}", peer);
+                                            }
                                         }
                                       
                                     }
