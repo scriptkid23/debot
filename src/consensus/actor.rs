@@ -28,11 +28,11 @@ impl Actor for Consensus {
         //TODO: start consensus layer
         println!("Starting consensus layer");
 
-        ctx.run_interval(Duration::from_secs(5), |actor, ctx| {
-            if let Some(network_addr) = &actor.network_addr {
-                network_addr.do_send(NetworkMessage("Periodic update".to_string()));
-            }
-        });
+        // ctx.run_interval(Duration::from_secs(5), |actor, ctx| {
+        //     if let Some(network_addr) = &actor.network_addr {
+        //         network_addr.do_send(NetworkMessage("Periodic update".to_string()));
+        //     }
+        // });
     }
 }
 impl Default for Consensus {

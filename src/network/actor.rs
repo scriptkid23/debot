@@ -3,7 +3,8 @@ use std::{collections::HashSet, time::Duration};
 use actix::prelude::*;
 use futures::{channel::mpsc, StreamExt};
 use libp2p::{mdns, noise, request_response, swarm::SwarmEvent, tcp, yamux, Multiaddr, PeerId, Swarm};
-use tokio::{io, select};
+use tokio::{select};
+use tokio_util::codec::{FramedRead, LinesCodec};
 use crate::{consensus::actor::Consensus, network::{behaviour::BehaviourEvent, codec::{MessageRequest, MessageResponse}}};
 
 use super::behaviour::Behaviour;
@@ -67,25 +68,45 @@ impl Actor for Network {
         }
 
         let (command_sender, mut command_receiver) = mpsc::channel(32);
+
         self.command_sender = Some(command_sender);
 
+        let stdin = tokio::io::stdin();
+        let mut stdin = FramedRead::new(stdin, LinesCodec::new());
+
+        println!("Type 'send <message>' to send a message to peers:");
+        
         ctx.spawn(
             async move {
+                let mut pending_requests = Vec::new();
                 loop {
                     select! {
+                      
                         event = swarm.select_next_some() => match event {
                             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                                 for (peer_id, multiaddr) in list {
                                     println!("mDNS discovered a new peer: {peer_id}");
                                     if !swarm.is_connected(&peer_id) {
                                         try_dial_peer(&mut swarm, multiaddr).await;
-
                                     }
                                 }
                             },
+
                             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                                 println!("Connection established with {peer_id}");
-                                // Lúc này chắc chắn is_connected() = true
+                                
+                                pending_requests.retain(|(target_peer, message): &(PeerId, String)| {
+                                    if *target_peer == peer_id {
+                                        println!("Sending message to {peer_id}: {message}");
+                                        let request = MessageRequest(message.clone());
+                                        swarm.behaviour_mut().request_response.send_request(target_peer, request);
+                                        false 
+                                    } else {
+                                        true 
+                                    }
+                                });
+
+                               
                             }
             
                             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
@@ -127,27 +148,37 @@ impl Actor for Network {
                             }
                             _ => {}
                         },
-                        command = command_receiver.next() => {
-                            if let Some(cmd) = command {
-                                match cmd {
-                                    SwarmCommand::SendMessage(msg) => {
-                                        println!("Sending message: {}", msg);
-                                        let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
+
+                        line = stdin.next() => match line {
+                            Some(Ok(line)) => {
+                                if let Some(message) = line.strip_prefix("send ") {
+                                    println!("Sending...: {}", message);
+                                    let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
+            
+                                    println!("{:?}", peers);
+            
+            
+                                    if peers.is_empty() {
+                                            print!("Nothing!")
+                                    }else {
                                         for peer in peers {
                                             if swarm.is_connected(&peer) {
-                                                println!("Sending to connected peer: {:?}", peer);
-                                                let request = MessageRequest(msg.clone());
-                                                let request_id = swarm.behaviour_mut().request_response.send_request(&peer, request);
-                                                println!("Sent request to {}: {:?}", peer, request_id);
+                                                println!("Sending message to connected peer: {peer}");
+                                                let request = MessageRequest(message.to_string());
+                                                swarm.behaviour_mut().request_response.send_request(&peer, request);
                                             } else {
-                                                println!("Peer not connected: {:?}", peer);
+                                                println!("Peer {peer} not connected, queuing message");
+                                                pending_requests.push((peer.clone(), message.to_string()));
                                             }
                                         }
-                                      
                                     }
                                 }
                             }
-                        }
+                            Some(Err(e)) => eprintln!("Error reading from stdin: {:?}", e),
+                            None => break,
+                        },
+                        
+                       
                     }
                 }
             }
