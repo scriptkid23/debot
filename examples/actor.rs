@@ -68,7 +68,10 @@ async fn main() {
     let addr_b = ActorB.start();
 
     // Start ActorA with ActorB's address
-    let addr_a = ActorA { b_addr: addr_b.clone() }.start();
+    let addr_a = ActorA {
+        b_addr: addr_b.clone(),
+    }
+    .start();
 
     // Wait for a short moment to allow actors to process messages
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

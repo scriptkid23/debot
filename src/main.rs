@@ -11,10 +11,10 @@ async fn main() {
 
     let consensus = Consensus::default().start();
 
-    // Send the network address to the consensus actor
+    // // Send the network address to the consensus actor
     consensus.do_send(SetNetworkAddr(network.clone()));
 
-    // Send the consensus address to the network actor
+    // // Send the consensus address to the network actor
     network.do_send(SetConsensusAddr(consensus.clone()));
 
     // Keep the main task running

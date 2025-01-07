@@ -1,8 +1,11 @@
-use serde::{Deserialize, Serialize};
-use std::{pin::Pin, io::{Error, ErrorKind}};
+use futures::prelude::*;
 use futures::{future::poll_fn, AsyncRead, AsyncWrite};
 use libp2p::request_response::Codec;
-use futures::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::{
+    io::{Error, ErrorKind},
+    pin::Pin,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageRequest(pub String);
@@ -23,7 +26,9 @@ impl Codec for MessageCodec {
         protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
     ) -> Pin<
-        Box<dyn core::future::Future<Output = std::io::Result<Self::Request>> + Send + 'async_trait>,
+        Box<
+            dyn core::future::Future<Output = std::io::Result<Self::Request>> + Send + 'async_trait,
+        >,
     >
     where
         T: AsyncRead + Unpin + Send + 'async_trait,
@@ -46,7 +51,8 @@ impl Codec for MessageCodec {
             let mut total_size = 0;
 
             loop {
-                let poll_result = poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])).await;
+                let poll_result =
+                    poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])).await;
 
                 match poll_result {
                     Ok(size) => {
@@ -55,7 +61,9 @@ impl Codec for MessageCodec {
                         }
                         total_size += size;
 
-                        if let Ok(request) = bincode::deserialize::<MessageRequest>(&buffer[..total_size]) {
+                        if let Ok(request) =
+                            bincode::deserialize::<MessageRequest>(&buffer[..total_size])
+                        {
                             return Ok(request);
                         }
                     }
@@ -102,7 +110,11 @@ impl Codec for MessageCodec {
         protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
     ) -> Pin<
-        Box<dyn core::future::Future<Output = std::io::Result<Self::Response>> + Send + 'async_trait>,
+        Box<
+            dyn core::future::Future<Output = std::io::Result<Self::Response>>
+                + Send
+                + 'async_trait,
+        >,
     >
     where
         T: AsyncRead + Unpin + Send + 'async_trait,
@@ -125,7 +137,8 @@ impl Codec for MessageCodec {
             let mut total_size = 0;
 
             loop {
-                let poll_result = poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])).await;
+                let poll_result =
+                    poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])).await;
 
                 match poll_result {
                     Ok(size) => {
@@ -137,7 +150,9 @@ impl Codec for MessageCodec {
                         }
                         total_size += size;
 
-                        if let Ok(response) = bincode::deserialize::<MessageResponse>(&buffer[..total_size]) {
+                        if let Ok(response) =
+                            bincode::deserialize::<MessageResponse>(&buffer[..total_size])
+                        {
                             return Ok(response);
                         }
                     }
