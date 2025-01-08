@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use crate::{
-    consensus::actor::Consensus,
+    consensus::actor::{Consensus, NetworkMessage},
     network::{
         behaviour::BehaviourEvent,
         codec::{MessageRequest, MessageResponse},
@@ -13,32 +13,11 @@ use libp2p::{
     mdns, noise,
     request_response::{self, Config, ProtocolSupport},
     swarm::SwarmEvent,
-    tcp, yamux, Multiaddr, PeerId, Swarm,
+    tcp, yamux, PeerId, Swarm,
 };
 use tokio::select;
-use tokio_util::codec::{FramedRead, LinesCodec};
 
 use super::behaviour::Behaviour;
-
-/// Messages to send to the actor
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct SendMessage(pub String);
-
-/// Events the actor can produce
-#[derive(Message)]
-#[rtype(result = "()")]
-pub enum NetworkEvent {
-    DiscoveredPeer(PeerId),
-    ReceivedRequest { from: PeerId, msg: String },
-    ReceivedResponse { from: PeerId, msg: String },
-    OutboundFailure { peer: PeerId },
-    InboundFailure { peer: PeerId },
-}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct DialPeer(pub Multiaddr);
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -46,13 +25,16 @@ pub struct SetConsensusAddr(pub Addr<Consensus>);
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct NetworkMessage(pub String);
+pub struct ConsensusMessage(pub Vec<u8>);
 
 enum SwarmCommand {
-    SendMessage { data: String },
+    ReceiveDataFrame { data: Vec<u8> },
     Shutdown,
-    Dial(Multiaddr),
 }
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct NetWorkEvent(pub String);
 
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
@@ -87,24 +69,32 @@ impl Actor for Network {
     }
 }
 
-impl Handler<SendMessage> for Network {
-    type Result = ();
-    fn handle(&mut self, msg: SendMessage, ctx: &mut Self::Context) -> Self::Result {
-        println!("Received SendMessage: {:?}", msg.0);
-    }
-}
-
-impl Handler<NetworkMessage> for Network {
+impl Handler<ConsensusMessage> for Network {
     type Result = ();
 
-    fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ConsensusMessage, ctx: &mut Self::Context) -> Self::Result {
         if let Some(sender) = &mut self.command_sender {
-            if let Err(e) = sender.try_send(SwarmCommand::SendMessage { data: msg.0 }) {
+            if let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame { data: vec![] }) {
                 eprintln!("Failed to send dial command: {:?}", e);
             }
         } else {
             eprintln!("Command sender not initialized");
         }
+    }
+}
+
+impl Handler<NetWorkEvent> for Network {
+    type Result = ();
+    fn handle(&mut self, msg: NetWorkEvent, ctx: &mut Self::Context) -> Self::Result {
+        println!("rêci{:?}", msg.0);
+
+        if let Some(consensus_addr) = self.consensus_addr.clone() {
+            println!("Forwarding event to consensus layer");
+            consensus_addr.do_send(NetworkMessage(msg.0)); // Convert string to bytes
+        } else {
+            println!("Consensus layer address not set. Cannot forward event.");
+        }
+        //TODO: send data to consensus layer
     }
 }
 
@@ -163,50 +153,12 @@ async fn run_swarm_loop(
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
     actor_addr: Addr<Network>,
 ) {
-    println!("swarm loop");
-
-    let stdin = tokio::io::stdin();
-    let mut stdin = FramedRead::new(stdin, LinesCodec::new());
-
-    println!("Type 'send <message>' to send a message to peers:");
-
     loop {
         select! {
-            line = stdin.next() => match line {
-                Some(Ok(line)) => {
-                    if let Some(message) = line.strip_prefix("send ") {
-                        println!("Sending...: {}", message);
-                        let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
-
-                        println!("{:?}", peers);
-
-                        if peers.is_empty() {
-                                print!("Nothing!")
-                        }else {
-                            for peer in peers {
-                               //TODO: send to cmd
-                               let request = MessageRequest(message.to_string());
-                               swarm.behaviour_mut().request_response.send_request(&peer, request);
-                            }
-                        }
-                    }
-                }
-                Some(Err(e)) => eprintln!("Error reading from stdin: {:?}", e),
-                None => break,
-            },
 
             cmd = cmd_rx.next() => {
                 match cmd {
-                    Some(SwarmCommand::Dial(addr)) => {
-                        if let Err(e) = swarm.dial(addr.clone()) {
-                            println!("Dial error: {:?}", e);
-                        }
-                        else {
-                            println!("Successfully dialed peer: {addr}");
-                        }
-                    }
-                    Some(SwarmCommand::SendMessage {  data }) => {
-                        println!("Swarm: SendMessage: {data}");
+                    Some(SwarmCommand::ReceiveDataFrame {  data }) => {
 
                         let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
 
@@ -217,7 +169,7 @@ async fn run_swarm_loop(
                         }else {
                             for peer in peers {
                                //TODO: send to cmd
-                               let request = MessageRequest(data.to_string());
+                               let request = MessageRequest(peer.to_string());
                                swarm.behaviour_mut().request_response.send_request(&peer, request);
                             }
                         }
@@ -228,6 +180,7 @@ async fn run_swarm_loop(
                         println!("Swarm: Shutdown");
                         break;
                     }
+
                     _ => ()
                 }
             }
@@ -279,8 +232,11 @@ async fn run_swarm_loop(
                                     request_response::Message::Request { request, channel, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
 
-                                        let response = MessageResponse("Response to your request".to_string());
-                                        swarm.behaviour_mut().request_response.send_response(channel, response).unwrap();
+
+                                        actor_addr.do_send(NetWorkEvent(peer.to_string()));
+
+
+
                                     }
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
@@ -290,6 +246,7 @@ async fn run_swarm_loop(
                             }
                             request_response::Event::OutboundFailure { peer, request_id, error } => {
                                 println!("Outbound failure for request {} to {}: {:?}", request_id, peer, error);
+
                             }
                             request_response::Event::InboundFailure { peer, request_id, error } => {
                                 println!("Inbound failure from {} for request {}: {:?}", peer, request_id, error);
@@ -306,33 +263,6 @@ async fn run_swarm_loop(
                     _ => {}
                 }
             }
-        }
-    }
-}
-
-impl Handler<NetworkEvent> for Network {
-    type Result = ();
-
-    fn handle(&mut self, evt: NetworkEvent, _ctx: &mut Self::Context) -> Self::Result {
-        match evt {
-            NetworkEvent::DiscoveredPeer(pid) => {
-                println!("Actor: discovered peer = {pid}");
-            }
-            _ => (),
-        }
-    }
-}
-
-impl Handler<DialPeer> for Network {
-    type Result = ();
-
-    fn handle(&mut self, msg: DialPeer, ctx: &mut Self::Context) -> Self::Result {
-        if let Some(sender) = &mut self.command_sender {
-            if let Err(e) = sender.try_send(SwarmCommand::Dial(msg.0)) {
-                eprintln!("Failed to send dial command: {:?}", e);
-            }
-        } else {
-            eprintln!("Command sender not initialized");
         }
     }
 }
