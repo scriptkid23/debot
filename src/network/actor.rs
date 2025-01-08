@@ -1,24 +1,22 @@
-use std::{ collections::HashSet, time::Duration };
+use std::{collections::HashSet, time::Duration};
 
 use crate::{
     consensus::actor::Consensus,
-    network::{ behaviour::BehaviourEvent, codec::{ MessageRequest, MessageResponse } },
+    network::{
+        behaviour::BehaviourEvent,
+        codec::{MessageRequest, MessageResponse},
+    },
 };
 use actix::prelude::*;
-use futures::{ channel::mpsc, StreamExt };
+use futures::{channel::mpsc, StreamExt};
 use libp2p::{
-    mdns,
-    noise,
-    request_response::{ self, Config, ProtocolSupport },
+    mdns, noise,
+    request_response::{self, Config, ProtocolSupport},
     swarm::SwarmEvent,
-    tcp,
-    yamux,
-    Multiaddr,
-    PeerId,
-    Swarm,
+    tcp, yamux, Multiaddr, PeerId, Swarm,
 };
 use tokio::select;
-use tokio_util::codec::{ FramedRead, LinesCodec };
+use tokio_util::codec::{FramedRead, LinesCodec};
 
 use super::behaviour::Behaviour;
 
@@ -32,20 +30,10 @@ pub struct SendMessage(pub String);
 #[rtype(result = "()")]
 pub enum NetworkEvent {
     DiscoveredPeer(PeerId),
-    ReceivedRequest {
-        from: PeerId,
-        msg: String,
-    },
-    ReceivedResponse {
-        from: PeerId,
-        msg: String,
-    },
-    OutboundFailure {
-        peer: PeerId,
-    },
-    InboundFailure {
-        peer: PeerId,
-    },
+    ReceivedRequest { from: PeerId, msg: String },
+    ReceivedResponse { from: PeerId, msg: String },
+    OutboundFailure { peer: PeerId },
+    InboundFailure { peer: PeerId },
 }
 
 #[derive(Message)]
@@ -61,10 +49,7 @@ pub struct SetConsensusAddr(pub Addr<Consensus>);
 pub struct NetworkMessage(pub String);
 
 enum SwarmCommand {
-    SendMessage {
-        peer: PeerId,
-        data: String,
-    },
+    SendMessage { data: String },
     Shutdown,
     Dial(Multiaddr),
 }
@@ -97,7 +82,7 @@ impl Actor for Network {
         let addr = ctx.address();
 
         ctx.spawn(
-            (async move { run_swarm_loop(swarm, command_receiver, addr).await }).into_actor(self)
+            (async move { run_swarm_loop(swarm, command_receiver, addr).await }).into_actor(self),
         );
     }
 }
@@ -106,6 +91,20 @@ impl Handler<SendMessage> for Network {
     type Result = ();
     fn handle(&mut self, msg: SendMessage, ctx: &mut Self::Context) -> Self::Result {
         println!("Received SendMessage: {:?}", msg.0);
+    }
+}
+
+impl Handler<NetworkMessage> for Network {
+    type Result = ();
+
+    fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) -> Self::Result {
+        if let Some(sender) = &mut self.command_sender {
+            if let Err(e) = sender.try_send(SwarmCommand::SendMessage { data: msg.0 }) {
+                eprintln!("Failed to send dial command: {:?}", e);
+            }
+        } else {
+            eprintln!("Command sender not initialized");
+        }
     }
 }
 
@@ -123,15 +122,18 @@ impl Default for Network {
         let peer_id = PeerId::from(id_keys.public());
         println!("Local peer id: {peer_id}");
 
-        let swarm = libp2p::SwarmBuilder
-            ::with_new_identity()
+        let swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
             .expect("msg")
             .with_behaviour(|key| {
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
-                    key.public().to_peer_id()
+                    key.public().to_peer_id(),
                 )?;
 
                 let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
@@ -159,7 +161,7 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    actor_addr: Addr<Network>
+    actor_addr: Addr<Network>,
 ) {
     println!("swarm loop");
 
@@ -177,8 +179,6 @@ async fn run_swarm_loop(
                         let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
 
                         println!("{:?}", peers);
-
-                      
 
                         if peers.is_empty() {
                                 print!("Nothing!")
@@ -205,8 +205,23 @@ async fn run_swarm_loop(
                             println!("Successfully dialed peer: {addr}");
                         }
                     }
-                    Some(SwarmCommand::SendMessage { peer, data }) => {
-                        println!("Swarm: SendMessage to {peer}: {data}");
+                    Some(SwarmCommand::SendMessage {  data }) => {
+                        println!("Swarm: SendMessage: {data}");
+
+                        let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
+
+                        println!("{:?}", peers);
+
+                        if peers.is_empty() {
+                                print!("Nothing!")
+                        }else {
+                            for peer in peers {
+                               //TODO: send to cmd
+                               let request = MessageRequest(data.to_string());
+                               swarm.behaviour_mut().request_response.send_request(&peer, request);
+                            }
+                        }
+
                         //TODO: send to swarm
                     }
                     Some(SwarmCommand::Shutdown) => {
@@ -229,7 +244,7 @@ async fn run_swarm_loop(
                             }
                         }
                     },
-                    
+
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         println!("Connection established with {peer_id}");
                     }
