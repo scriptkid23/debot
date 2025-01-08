@@ -1,21 +1,26 @@
 use std::collections::HashSet;
 
 use futures::prelude::*;
-use futures::{future::poll_fn, StreamExt};
+use futures::{ future::poll_fn, StreamExt };
 use libp2p::request_response::Config;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{
-    mdns, noise,
-    request_response::{self, Codec, ProtocolSupport},
+    mdns,
+    noise,
+    request_response::{ self, Codec, ProtocolSupport },
     swarm::NetworkBehaviour,
-    tcp, yamux, Multiaddr, PeerId, Swarm,
+    tcp,
+    yamux,
+    Multiaddr,
+    PeerId,
+    Swarm,
 };
-use serde::{Deserialize, Serialize};
-use std::io::{Error, ErrorKind};
-use std::{pin::Pin, time::Duration};
+use serde::{ Deserialize, Serialize };
+use std::io::{ Error, ErrorKind };
+use std::{ pin::Pin, time::Duration };
 
-use tokio::{io, select};
-use tokio_util::codec::{FramedRead, LinesCodec};
+use tokio::{ io, select };
+use tokio_util::codec::{ FramedRead, LinesCodec };
 
 // Define request and response types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,28 +41,26 @@ impl Codec for MessageCodec {
     fn read_response<'life0, 'life1, 'life2, 'async_trait, T>(
         &'life0 mut self,
         protocol: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-    ) -> ::core::pin::Pin<
-        Box<
-            dyn ::core::future::Future<Output = std::io::Result<Self::Response>>
-                + ::core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        T: futures::AsyncRead + Unpin + Send,
-        T: 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
+        io: &'life2 mut T
+    )
+        -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = std::io::Result<Self::Response>> +
+                    ::core::marker::Send +
+                    'async_trait
+            >
+        >
+        where
+            T: futures::AsyncRead + Unpin + Send,
+            T: 'async_trait,
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait
     {
         if *protocol != "/message_protocol/1" {
             return Box::pin(async {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid protocol",
-                ))
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid protocol"))
             });
         }
 
@@ -66,26 +69,33 @@ impl Codec for MessageCodec {
             let mut total_size = 0;
 
             loop {
-                let poll_result =
-                    poll_fn(|cx| Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])).await;
+                let poll_result = poll_fn(|cx|
+                    Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])
+                ).await;
 
                 match poll_result {
                     Ok(size) => {
                         if size == 0 {
-                            return Err(Error::new(
-                                ErrorKind::UnexpectedEof,
-                                "Connection closed while reading response",
-                            ));
+                            return Err(
+                                Error::new(
+                                    ErrorKind::UnexpectedEof,
+                                    "Connection closed while reading response"
+                                )
+                            );
                         }
                         total_size += size;
 
-                        if let Ok(response) =
-                            bincode::deserialize::<MessageResponse>(&buffer[..total_size])
+                        if
+                            let Ok(response) = bincode::deserialize::<MessageResponse>(
+                                &buffer[..total_size]
+                            )
                         {
                             return Ok(response);
                         }
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(e);
+                    }
                 }
             }
         })
@@ -95,33 +105,32 @@ impl Codec for MessageCodec {
         &'life0 mut self,
         protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
-        req: Self::Request,
-    ) -> ::core::pin::Pin<
-        Box<
-            dyn ::core::future::Future<Output = std::io::Result<()>>
-                + ::core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        T: futures::AsyncWrite + Unpin + Send,
-        T: 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
+        req: Self::Request
+    )
+        -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = std::io::Result<()>> +
+                    ::core::marker::Send +
+                    'async_trait
+            >
+        >
+        where
+            T: futures::AsyncWrite + Unpin + Send,
+            T: 'async_trait,
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait
     {
         if *protocol != "/message_protocol/1" {
             return Box::pin(async {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid protocol",
-                ))
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid protocol"))
             });
         }
 
         Box::pin(async move {
-            let bytes = bincode::serialize(&req)
+            let bytes = bincode
+                ::serialize(&req)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
             io.write_all(&bytes).await?;
@@ -133,32 +142,31 @@ impl Codec for MessageCodec {
         &'life0 mut self,
         protocol: &'life1 Self::Protocol,
         io: &'life2 mut T,
-        res: Self::Response,
-    ) -> ::core::pin::Pin<
-        Box<
-            dyn ::core::future::Future<Output = std::io::Result<()>>
-                + ::core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        T: futures::AsyncWrite + Unpin + Send,
-        T: 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
+        res: Self::Response
+    )
+        -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = std::io::Result<()>> +
+                    ::core::marker::Send +
+                    'async_trait
+            >
+        >
+        where
+            T: futures::AsyncWrite + Unpin + Send,
+            T: 'async_trait,
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait
     {
         if *protocol != "/message_protocol/1" {
             return Box::pin(async {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid protocol",
-                ))
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid protocol"))
             });
         }
         Box::pin(async move {
-            let bytes = bincode::serialize(&res)
+            let bytes = bincode
+                ::serialize(&res)
                 .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
             // Write the serialized response
             io.write_all(&bytes).await?;
@@ -172,28 +180,26 @@ impl Codec for MessageCodec {
     fn read_request<'life0, 'life1, 'life2, 'async_trait, T>(
         &'life0 mut self,
         protocol: &'life1 Self::Protocol,
-        io: &'life2 mut T,
-    ) -> ::core::pin::Pin<
-        Box<
-            dyn ::core::future::Future<Output = std::io::Result<Self::Request>>
-                + ::core::marker::Send
-                + 'async_trait,
-        >,
-    >
-    where
-        T: futures::AsyncRead + Unpin + Send,
-        T: 'async_trait,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        Self: 'async_trait,
+        io: &'life2 mut T
+    )
+        -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = std::io::Result<Self::Request>> +
+                    ::core::marker::Send +
+                    'async_trait
+            >
+        >
+        where
+            T: futures::AsyncRead + Unpin + Send,
+            T: 'async_trait,
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait
     {
         if *protocol != "/message_protocol/1" {
             return Box::pin(async {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid protocol",
-                ))
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid protocol"))
             });
         }
         Box::pin(async move {
@@ -204,8 +210,7 @@ impl Codec for MessageCodec {
                 let poll_result = poll_fn(|cx| {
                     // Borrow `io` explicitly and ensure it is pinned
                     Pin::new(&mut *io).poll_read(cx, &mut buffer[total_size..])
-                })
-                .await;
+                }).await;
 
                 match poll_result {
                     Ok(size) => {
@@ -215,13 +220,17 @@ impl Codec for MessageCodec {
                         total_size += size;
 
                         // Attempt to deserialize
-                        if let Ok(request) =
-                            bincode::deserialize::<MessageRequest>(&buffer[..total_size])
+                        if
+                            let Ok(request) = bincode::deserialize::<MessageRequest>(
+                                &buffer[..total_size]
+                            )
                         {
                             return Ok(request);
                         }
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(e);
+                    }
                 }
             }
         })
@@ -249,16 +258,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_id = PeerId::from(id_keys.public());
     println!("Local peer id: {peer_id}");
 
-    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+    let mut swarm = libp2p::SwarmBuilder
+        ::with_new_identity()
         .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
+        .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)?
         .with_behaviour(|key| {
-            let mdns =
-                mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
+            let mdns = mdns::tokio::Behaviour::new(
+                mdns::Config::default(),
+                key.public().to_peer_id()
+            )?;
 
             let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
 
@@ -296,6 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 print!("Nothing!")
                         }else {
                             for peer in peers {
+                                println!("{:?}", swarm.is_connected(&peer));
                                 let request = MessageRequest(message.to_string());
                                 swarm.behaviour_mut().request_response.send_request(&peer, request);
                             }
@@ -320,6 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("mDNS discover peer has expired: {peer_id}");
                     }
                 },
+
+                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                    println!("Connection established with {peer_id}");
+                }
 
                 SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(event)) => {
                     match event {
