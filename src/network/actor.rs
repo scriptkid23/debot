@@ -235,7 +235,7 @@ async fn run_swarm_loop(
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                        for (peer_id, multiaddr) in list {
+                        for (_, multiaddr) in list {
                             if let Err(e) = swarm.dial(multiaddr.clone()) {
                                 println!("Dial error: {:?}", e);
                             }
@@ -252,8 +252,9 @@ async fn run_swarm_loop(
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                         println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
                     },
-                    SwarmEvent::IncomingConnectionError { connection_id, error, local_addr, send_back_addr } => {
-                        println!("Incoming connection error:{:?}", error);
+
+                    SwarmEvent::IncomingConnectionError { error, .. } => {
+                        println!("Incoming connection error: {:?}", error);
                     },
 
                     SwarmEvent::Dialing { peer_id, connection_id } => {
