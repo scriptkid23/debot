@@ -1,4 +1,4 @@
-use std::{ collections::HashSet, time::Duration };
+use std::{ collections::HashSet, time::Duration, vec };
 
 use crate::{
     consensus::actor::{ Consensus, NetworkMessage },
@@ -30,7 +30,8 @@ pub struct ConsensusMessage(pub Vec<u8>);
 
 enum SwarmCommand {
     ReceiveDataFrame {
-        data: Vec<u8>,
+        peer_ids: HashSet<PeerId>,
+        msg: Vec<u8>,
     },
     Shutdown,
 }
@@ -61,10 +62,18 @@ impl Actor for Network {
 
         let mut swarm = self.swarm.take().expect("Swarm should be initialized");
 
-        if let Err(e) = swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().expect("Invalid multiaddr")) {
-            eprintln!("Failed to start listening: {:?}", e);
+        if
+            let Err(e) = swarm.listen_on(
+                "/ip4/0.0.0.0/tcp/0"
+                    .parse()
+                    .unwrap_or_else(|_| {
+                        panic!("Invalid multiaddr provided. Check your configuration.")
+                    })
+            )
+        {
+            tracing::error!("Failed to start listening: {:?}", e);
         } else {
-            println!("Listening on all interfaces on a random port");
+            tracing::info!("Listening on all interfaces on a random port");
         }
 
         let (command_sender, command_receiver) = mpsc::channel(32);
@@ -84,7 +93,12 @@ impl Handler<ConsensusMessage> for Network {
 
     fn handle(&mut self, msg: ConsensusMessage, ctx: &mut Self::Context) -> Self::Result {
         if let Some(sender) = &mut self.command_sender {
-            if let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame { data: vec![] }) {
+            if
+                let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame {
+                    peer_ids: self.peer_ids.clone(),
+                    msg: vec![],
+                })
+            {
                 eprintln!("Failed to send dial command: {:?}", e);
             }
         } else {
@@ -166,24 +180,17 @@ async fn run_swarm_loop(
 
             cmd = cmd_rx.next() => {
                 match cmd {
-                    Some(SwarmCommand::ReceiveDataFrame {  data }) => {
-
-                        let peers: HashSet<PeerId> = swarm.behaviour().mdns.discovered_nodes().cloned().collect();
-
-                        println!("{:?}", peers);
-
-                        if peers.is_empty() {
+                    Some(SwarmCommand::ReceiveDataFrame {  peer_ids, msg }) => {
+                        if peer_ids.is_empty() {
                                 print!("Nothing!")
-                        }else {
-                            for peer in peers {
-                               //TODO: send to cmd
+                        } else {
+                            for peer in peer_ids {
                                let request = MessageRequest(peer.to_string());
                                swarm.behaviour_mut().request_response.send_request(&peer, request);
                             }
                         }
-
-                        //TODO: send to swarm
                     }
+
                     Some(SwarmCommand::Shutdown) => {
                         println!("Swarm: Shutdown");
                         break;
@@ -207,7 +214,6 @@ async fn run_swarm_loop(
                     },
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        println!("Connection established with {peer_id}");
                         actor_addr.do_send(SwarmEventMessage::ConnectionEstablished(peer_id));
                         
                     }
@@ -220,9 +226,9 @@ async fn run_swarm_loop(
                         println!("Incoming connection error: {:?}", error);
                     },
 
-                    SwarmEvent::Dialing { peer_id, connection_id } => {
-                        println!("Dialing peer: {:?}, connection_id: {:?}", peer_id, connection_id);
-                    },
+                    // SwarmEvent::Dialing { peer_id, connection_id } => {
+                    //     println!("Dialing peer: {:?}, connection_id: {:?}", peer_id, connection_id);
+                    // },
 
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
                         println!("Connection closed with {peer_id} via {:?}", endpoint);
