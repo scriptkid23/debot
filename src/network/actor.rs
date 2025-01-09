@@ -39,8 +39,15 @@ enum SwarmCommand {
 #[rtype(result = "()")]
 pub struct NetWorkEvent(pub String);
 
+#[derive(Message)]
+#[rtype(result = "()")]
+pub enum SwarmEventMessage {
+    ConnectionEstablished(PeerId),
+    ConnectionClosed(PeerId),
+}
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
+    peer_ids: HashSet<PeerId>,
     swarm: Option<Swarm<Behaviour>>,
     command_sender: Option<mpsc::Sender<SwarmCommand>>,
     consensus_addr: Option<Addr<Consensus>>,
@@ -142,6 +149,7 @@ impl Default for Network {
 
         Network {
             swarm: Some(swarm),
+            peer_ids: HashSet::new(),
             command_sender: None,
             consensus_addr: None,
         }
@@ -200,6 +208,8 @@ async fn run_swarm_loop(
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         println!("Connection established with {peer_id}");
+                        actor_addr.do_send(SwarmEventMessage::ConnectionEstablished(peer_id));
+                        
                     }
 
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -216,6 +226,7 @@ async fn run_swarm_loop(
 
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
                         println!("Connection closed with {peer_id} via {:?}", endpoint);
+                        actor_addr.do_send(SwarmEventMessage::ConnectionClosed(peer_id));
                     },
 
 
@@ -231,7 +242,6 @@ async fn run_swarm_loop(
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
-
 
                                         actor_addr.do_send(NetWorkEvent(peer.to_string()));
 
@@ -271,5 +281,33 @@ async fn run_swarm_loop(
         }
     }
 }
+impl Handler<SwarmEventMessage> for Network {
+    type Result = ();
+    fn handle(&mut self, msg: SwarmEventMessage, ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            SwarmEventMessage::ConnectionEstablished(peer_id) => {
+                let is_new = self.peer_ids.insert(peer_id.clone());
 
+                if is_new {
+                    println!(
+                        "New connection established with {peer_id}. Total peers: {}",
+                        self.peer_ids.len()
+                    );
+                } else {
+                    println!("Peer {peer_id} was already in the set.");
+                }
+            }
+
+            SwarmEventMessage::ConnectionClosed(peer_id) => {
+                let was_present = self.peer_ids.remove(&peer_id);
+
+                if was_present {
+                    println!("Removed {peer_id}. Total peers: {}", self.peer_ids.len());
+                } else {
+                    println!("Peer {peer_id} not found in set.");
+                }
+            }
+        }
+    }
+}
 impl Network {}
