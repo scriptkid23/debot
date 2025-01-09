@@ -246,9 +246,9 @@ async fn run_swarm_loop(
                         match event {
                             request_response::Event::Message { peer, message } => {
                                 match message {
-                                    request_response::Message::Request { request, channel, .. } => {
-                                        println!("Received request from {}: {:?}", peer, request);
-
+                                    
+                                    request_response::Message::Request { channel, .. } => {
+                                  
                                         actor_addr.do_send(NetWorkEvent(peer.to_string()));
 
                                         if let Err(e) = swarm.behaviour_mut().request_response.send_response(
@@ -259,6 +259,7 @@ async fn run_swarm_loop(
                                         }
 
                                     }
+
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
 
