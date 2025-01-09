@@ -1,19 +1,20 @@
-use std::{collections::HashSet, time::Duration};
+use std::{ collections::HashSet, time::Duration };
 
 use crate::{
-    consensus::actor::{Consensus, NetworkMessage},
-    network::{
-        behaviour::BehaviourEvent,
-        codec::{MessageRequest, MessageResponse},
-    },
+    consensus::actor::{ Consensus, NetworkMessage },
+    network::{ behaviour::BehaviourEvent, codec::{ MessageRequest, MessageResponse } },
 };
 use actix::prelude::*;
-use futures::{channel::mpsc, StreamExt};
+use futures::{ channel::mpsc, StreamExt };
 use libp2p::{
-    mdns, noise,
-    request_response::{self, Config, ProtocolSupport},
+    mdns,
+    noise,
+    request_response::{ self, Config, ProtocolSupport },
     swarm::SwarmEvent,
-    tcp, yamux, PeerId, Swarm,
+    tcp,
+    yamux,
+    PeerId,
+    Swarm,
 };
 use tokio::select;
 
@@ -28,7 +29,9 @@ pub struct SetConsensusAddr(pub Addr<Consensus>);
 pub struct ConsensusMessage(pub Vec<u8>);
 
 enum SwarmCommand {
-    ReceiveDataFrame { data: Vec<u8> },
+    ReceiveDataFrame {
+        data: Vec<u8>,
+    },
     Shutdown,
 }
 
@@ -64,7 +67,7 @@ impl Actor for Network {
         let addr = ctx.address();
 
         ctx.spawn(
-            (async move { run_swarm_loop(swarm, command_receiver, addr).await }).into_actor(self),
+            (async move { run_swarm_loop(swarm, command_receiver, addr).await }).into_actor(self)
         );
     }
 }
@@ -112,18 +115,15 @@ impl Default for Network {
         let peer_id = PeerId::from(id_keys.public());
         println!("Local peer id: {peer_id}");
 
-        let swarm = libp2p::SwarmBuilder::with_new_identity()
+        let swarm = libp2p::SwarmBuilder
+            ::with_new_identity()
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)
             .expect("msg")
             .with_behaviour(|key| {
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
-                    key.public().to_peer_id(),
+                    key.public().to_peer_id()
                 )?;
 
                 let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
@@ -151,7 +151,7 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    actor_addr: Addr<Network>,
+    actor_addr: Addr<Network>
 ) {
     loop {
         select! {
@@ -235,7 +235,12 @@ async fn run_swarm_loop(
 
                                         actor_addr.do_send(NetWorkEvent(peer.to_string()));
 
-
+                                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(
+                                            channel,
+                                            MessageResponse("Hello from local node!".to_string())
+                                        ) {
+                                            eprintln!("Failed to send response: {:?}", e);
+                                        }
 
                                     }
                                     request_response::Message::Response { request_id, response } => {
