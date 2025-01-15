@@ -1,3 +1,9 @@
+// Data Flow
+// Step 1: A Response Layer receives incoming data from a node, creates a Network Event, and forwards it to the Network Layer.
+// Step 2: The Network Layer processes the event and generates a Request Message, broadcasting it to other nodes.
+// Step 3: The receiving node’s Request Layer captures the request and forwards it to the Response Layer.
+// Step 4: The Response Layer processes the request, generates a response, and restarts the cycle.
+
 use std::{ collections::HashSet, time::Duration, vec };
 
 use crate::{
@@ -54,6 +60,14 @@ pub enum SwarmEventMessage {
     ConnectionEstablished(PeerId),
     ConnectionClosed(PeerId),
 }
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub enum NetworkEventMessage {
+    Request(PeerId, String),
+    Response(PeerId, String),
+}
+
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
     peer_ids: HashSet<PeerId>,
@@ -258,20 +272,11 @@ async fn run_swarm_loop(
                                     request_response::Message::Request { channel, request, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
 
-                                        match actor_addr.send(NetWorkEvent(request.0)).await {
-                                            Ok(result)=> match  result {
-                                                Ok(message) => {
-                                                     //TODO: I want to wait the "send function" have a result then continues send_response
-                                                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(
+                                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(
                                                             channel,
-                                                            MessageResponse(message.to_string())
+                                                            MessageResponse(request.0)
                                                         ) {
                                                             eprintln!("Failed to send response: {:?}", e);
-                                                        }
-                                                },
-                                                    _ => ()
-                                                            },
-                                                            Err(_) => println!("error")
                                                         }
 
                                     }
@@ -316,6 +321,17 @@ async fn run_swarm_loop(
         }
     }
 }
+
+impl Handler<NetworkEventMessage> for Network {
+    type Result = ();
+    fn handle(&mut self, msg: NetworkEventMessage, ctx: &mut Self::Context) -> Self::Result {
+        match msg {
+            NetworkEventMessage::Request(peer_id, message) => {}
+            NetworkEventMessage::Response(peer_id, message) => {}
+        }
+    }
+}
+
 impl Handler<SwarmEventMessage> for Network {
     type Result = ();
     fn handle(&mut self, msg: SwarmEventMessage, ctx: &mut Self::Context) -> Self::Result {
