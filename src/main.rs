@@ -1,7 +1,7 @@
 use actix::prelude::*;
 use debot::{
-    consensus::actor::{ Consensus, SetNetworkAddr },
-    network::actor::{ Network, SetConsensusAddr },
+    consensus::actor::{Consensus, SetNetworkAddr},
+    network::actor::{Network, SetConsensusAddr},
 };
 
 #[actix_rt::main]
@@ -17,5 +17,7 @@ async fn main() {
 
     // Keep the main task running
     println!("Press Ctrl+C to exit");
-    tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for ctrl+c");
 }

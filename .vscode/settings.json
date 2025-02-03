@@ -1,0 +1,37 @@
+{
+    // Format on save
+    "editor.formatOnSave": true,
+    // Optional: Format on paste
+    "editor.formatOnPaste": true,
+    // Rust-analyzer settings for better IDE experience
+    "rust-analyzer.procMacro.enable": true,
+    // Show inlay hints for better code understanding
+    "rust-analyzer.inlayHints.enable": true,
+    "rust-analyzer.inlayHints.typeHints.enable": true,
+    "rust-analyzer.inlayHints.parameterHints.enable": true,
+    "rust-analyzer.inlayHints.bindingModeHints.enable": true,
+    // Improve autocomplete and diagnostics
+    "rust-analyzer.completion.autoimport.enable": true,
+    "rust-analyzer.diagnostics.enable": true,
+    // Enable snippets for Rust
+    "rust-analyzer.completion.snippets.custom": {
+        "impl Debug": {
+            "prefix": "debug",
+            "body": [
+                "impl std::fmt::Debug for ${1:Struct} {",
+                "    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {",
+                "        write!(f, \"${1:Struct} {{ }}\")",
+                "    }",
+                "}"
+            ],
+            "description": "Implement Debug trait"
+        }
+    },
+    // Use Clippy for better linting
+    "rust-analyzer.lens.enable": true,
+    // Set default terminal to use for Rust commands
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.defaultProfile.osx": "zsh",
+    // Optional: Enable auto-save for smoother experience
+}

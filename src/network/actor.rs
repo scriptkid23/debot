@@ -148,7 +148,7 @@ impl Handler<NetWorkEvent> for Network {
         if let Some(consensus_addr) = self.consensus_addr.clone() {
             println!("Forwarding event to consensus layer");
             consensus_addr.do_send(NetworkMessage(msg.0)); // Convert string to bytes
-            Ok(format!("Processed network event"))
+            Ok("Processed network event".to_string())
         } else {
             println!("Consensus layer address not set. Cannot forward event.");
             Err(NetworkError::ConnectionFailed)
@@ -213,11 +213,12 @@ async fn run_swarm_loop(
     loop {
         select! {
 
+
             cmd = cmd_rx.next() => {
                 match cmd {
                     Some(SwarmCommand::ReceiveDataFrame {  peer_ids, msg }) => {
                         if peer_ids.is_empty() {
-                                print!("Nothing!")
+                            println!("No peers received.");
                         } else {
                             for peer in peer_ids {
                                let request = MessageRequest(peer.to_string());
@@ -231,7 +232,9 @@ async fn run_swarm_loop(
                         break;
                     }
 
-                    _ => ()
+                    _ => {
+                        println!("Received an unknown command.");
+                    }
                 }
             }
 
@@ -284,7 +287,7 @@ async fn run_swarm_loop(
 
                                     request_response::Message::Request { channel, request, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
-                                        
+
                                         if let Err(e) = swarm.behaviour_mut().request_response.send_response(
                                                             channel,
                                                             MessageResponse(request.0)
@@ -297,11 +300,8 @@ async fn run_swarm_loop(
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
                                         match network_addr.send(NetWorkEvent(response.0)).await {
-                                            Ok(result) => match  result {
-                                                Ok(message) => {
-                                                   println!("{:?}", message);
-                                                }
-                                                _ => ()
+                                            Ok(result) => if let Ok(message) = result {
+                                               println!("{:?}", message);
                                             }
                                             Err(_) => println!("error")
                                         }
@@ -350,7 +350,7 @@ impl Handler<SwarmEventMessage> for Network {
     fn handle(&mut self, msg: SwarmEventMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             SwarmEventMessage::ConnectionEstablished(peer_id) => {
-                let is_new = self.peer_ids.insert(peer_id.clone());
+                let is_new = self.peer_ids.insert(peer_id);
 
                 if is_new {
                     println!(
