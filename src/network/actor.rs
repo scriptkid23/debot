@@ -102,14 +102,20 @@ impl Actor for Network {
 
         self.command_sender = Some(command_sender);
 
-        let addr = ctx.address();
+        let network_addr = ctx.address();
 
-        let consensus_addr = self.consensus_addr.clone().unwrap();
+        let consensus_addr = match self.consensus_addr.clone() {
+            Some(addr) => addr,
+            None => {
+                tracing::error!("Consensus address is missing");
+                return;
+            }
+        };
 
         ctx.spawn(
             (
                 async move {
-                    run_swarm_loop(swarm, command_receiver, addr, consensus_addr).await
+                    run_swarm_loop(swarm, command_receiver, network_addr, consensus_addr).await
                 }
             ).into_actor(self)
         );
@@ -201,7 +207,7 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    actor_addr: Addr<Network>,
+    network_addr: Addr<Network>,
     consensus_addr: Addr<Consensus>
 ) {
     loop {
@@ -243,7 +249,7 @@ async fn run_swarm_loop(
                     },
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        actor_addr.do_send(SwarmEventMessage::ConnectionEstablished(peer_id));
+                        network_addr.do_send(SwarmEventMessage::ConnectionEstablished(peer_id));
 
                     }
 
@@ -261,7 +267,7 @@ async fn run_swarm_loop(
 
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
                         println!("Connection closed with {peer_id} via {:?}", endpoint);
-                        actor_addr.do_send(SwarmEventMessage::ConnectionClosed(peer_id));
+                        network_addr.do_send(SwarmEventMessage::ConnectionClosed(peer_id));
                     },
 
 
@@ -290,7 +296,7 @@ async fn run_swarm_loop(
 
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
-                                        match actor_addr.send(NetWorkEvent(response.0)).await {
+                                        match network_addr.send(NetWorkEvent(response.0)).await {
                                             Ok(result) => match  result {
                                                 Ok(message) => {
                                                    println!("{:?}", message);
