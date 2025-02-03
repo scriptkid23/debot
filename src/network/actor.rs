@@ -104,8 +104,14 @@ impl Actor for Network {
 
         let addr = ctx.address();
 
+        let consensus_addr = self.consensus_addr.clone().unwrap();
+
         ctx.spawn(
-            (async move { run_swarm_loop(swarm, command_receiver, addr).await }).into_actor(self)
+            (
+                async move {
+                    run_swarm_loop(swarm, command_receiver, addr, consensus_addr).await
+                }
+            ).into_actor(self)
         );
     }
 }
@@ -195,7 +201,8 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    actor_addr: Addr<Network>
+    actor_addr: Addr<Network>,
+    consensus_addr: Addr<Consensus>
 ) {
     loop {
         select! {
@@ -271,7 +278,7 @@ async fn run_swarm_loop(
 
                                     request_response::Message::Request { channel, request, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
-
+                                        
                                         if let Err(e) = swarm.behaviour_mut().request_response.send_response(
                                                             channel,
                                                             MessageResponse(request.0)
