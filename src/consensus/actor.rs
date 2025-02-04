@@ -13,9 +13,15 @@ pub struct Consensus {
 #[rtype(result = "()")]
 pub struct SetNetworkAddr(pub Addr<Network>);
 
+#[derive(Debug)]
+pub enum Network2ConsensusRequestError {
+    InvalidData,
+    // Add other error variants as needed
+}
+
 #[derive(Message)]
-#[rtype(result = "()")]
-pub struct NetworkMessage(pub String);
+#[rtype(result = "Result<String, Network2ConsensusRequestError>")]
+pub struct Network2ConsensusRequest(pub String);
 
 impl Actor for Consensus {
     type Context = Context<Self>;
@@ -46,10 +52,11 @@ impl Handler<SetNetworkAddr> for Consensus {
     }
 }
 
-impl Handler<NetworkMessage> for Consensus {
-    type Result = ();
+impl Handler<Network2ConsensusRequest> for Consensus {
+    type Result = Result<String, Network2ConsensusRequestError>;
 
-    fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: Network2ConsensusRequest, ctx: &mut Self::Context) -> Self::Result {
         println!("Received data from network: {}", msg.0);
+        Ok("Processed network event".to_string())
     }
 }

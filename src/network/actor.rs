@@ -7,7 +7,7 @@
 use std::{ collections::HashSet, time::Duration, vec };
 
 use crate::{
-    consensus::actor::{ Consensus, NetworkMessage },
+    consensus::actor::{ Consensus, Network2ConsensusRequest },
     network::{ behaviour::BehaviourEvent, codec::{ MessageRequest, MessageResponse } },
 };
 use actix::prelude::*;
@@ -141,21 +141,6 @@ impl Handler<ConsensusMessage> for Network {
     }
 }
 
-impl Handler<NetWorkEvent> for Network {
-    type Result = Result<String, NetworkError>;
-
-    fn handle(&mut self, msg: NetWorkEvent, ctx: &mut Self::Context) -> Self::Result {
-        if let Some(consensus_addr) = self.consensus_addr.clone() {
-            println!("Forwarding event to consensus layer");
-            consensus_addr.do_send(NetworkMessage(msg.0)); // Convert string to bytes
-            Ok("Processed network event".to_string())
-        } else {
-            println!("Consensus layer address not set. Cannot forward event.");
-            Err(NetworkError::ConnectionFailed)
-        }
-    }
-}
-
 impl Handler<SetConsensusAddr> for Network {
     type Result = ();
 
@@ -264,9 +249,9 @@ async fn run_swarm_loop(
                         println!("Incoming connection error: {:?}", error);
                     },
 
-                    // SwarmEvent::Dialing { peer_id, connection_id } => {
-                    //     println!("Dialing peer: {:?}, connection_id: {:?}", peer_id, connection_id);
-                    // },
+                    SwarmEvent::Dialing { peer_id, connection_id } => {
+                        println!("Dialing peer: {:?}, connection_id: {:?}", peer_id, connection_id);
+                    },
 
                     SwarmEvent::ConnectionClosed { peer_id, endpoint, .. } => {
                         println!("Connection closed with {peer_id} via {:?}", endpoint);
@@ -288,23 +273,34 @@ async fn run_swarm_loop(
                                     request_response::Message::Request { channel, request, .. } => {
                                         println!("Received request from {}: {:?}", peer, request);
 
-                                        if let Err(e) = swarm.behaviour_mut().request_response.send_response(
-                                                            channel,
-                                                            MessageResponse(request.0)
-                                                        ) {
-                                                            eprintln!("Failed to send response: {:?}", e);
-                                                        }
+                                        match consensus_addr.send(Network2ConsensusRequest("send request".to_string())).await {
+                                            Ok(result) => if let Ok(message) = result {
+                                                println!("Received message from {}: {:?}", peer, message);
+
+                                                if let Err(e) = swarm.behaviour_mut().request_response.send_response(channel, MessageResponse(request.0)) {
+                                                    eprint!("Failed to send request: {:?}",e);
+                                                };
+                                            }
+                                            Err(_) => print!("Error")
+                                        };
+
+                                        // if let Err(e) = swarm.behaviour_mut().request_response.send_response(
+                                        //                     channel,
+                                        //                     MessageResponse(request.0)
+                                        //                 ) {
+                                        //                     eprintln!("Failed to send response: {:?}", e);
+                                        //                 }
 
                                     }
 
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
-                                        match network_addr.send(NetWorkEvent(response.0)).await {
-                                            Ok(result) => if let Ok(message) = result {
-                                               println!("{:?}", message);
-                                            }
-                                            Err(_) => println!("error")
-                                        }
+                                        // match network_addr.send(NetWorkEvent(response.0)).await {
+                                        //     Ok(result) => if let Ok(message) = result {
+                                        //        println!("{:?}", message);
+                                        //     }
+                                        //     Err(_) => println!("error")
+                                        // }
 
 
                                     }
