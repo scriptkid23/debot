@@ -333,7 +333,7 @@ impl Handler<NetworkEventMessage> for Network {
                     return Err(NetworkError::InvalidData);
                 }
 
-                let response = format!("Processed request: {}", message);
+                let response = format!("Processed request: {} and {}", message, peer_id);
                 Ok(response.to_uppercase())
             }
             NetworkEventMessage::Response(peer_id, message) => {
