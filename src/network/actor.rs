@@ -4,22 +4,23 @@
 // Step 3: The receiving node’s Request Layer captures the request and forwards it to the Response Layer.
 // Step 4: The Response Layer processes the request, generates a response, and restarts the cycle.
 
-use std::{collections::HashSet, time::Duration, vec};
+use std::{ collections::HashSet, time::Duration, vec };
 
 use crate::{
-    consensus::actor::{Consensus, Network2ConsensusRequest},
-    network::{
-        behaviour::BehaviourEvent,
-        codec::{MessageRequest, MessageResponse},
-    },
+    consensus::actor::{ Consensus, Network2ConsensusRequest },
+    network::{ self, behaviour::BehaviourEvent, codec::{ MessageRequest, MessageResponse } },
 };
 use actix::prelude::*;
-use futures::{channel::mpsc, StreamExt};
+use futures::{ channel::mpsc, StreamExt };
 use libp2p::{
-    mdns, noise,
-    request_response::{self, Config, ProtocolSupport},
+    mdns,
+    noise,
+    request_response::{ self, Config, ProtocolSupport },
     swarm::SwarmEvent,
-    tcp, yamux, PeerId, Swarm,
+    tcp,
+    yamux,
+    PeerId,
+    Swarm,
 };
 use tokio::select;
 
@@ -83,10 +84,14 @@ impl Actor for Network {
 
         let mut swarm = self.swarm.take().expect("Swarm should be initialized");
 
-        if let Err(e) =
-            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap_or_else(|_| {
-                panic!("Invalid multiaddr provided. Check your configuration.")
-            }))
+        if
+            let Err(e) = swarm.listen_on(
+                "/ip4/0.0.0.0/tcp/0"
+                    .parse()
+                    .unwrap_or_else(|_| {
+                        panic!("Invalid multiaddr provided. Check your configuration.")
+                    })
+            )
         {
             tracing::error!("Failed to start listening: {:?}", e);
         } else {
@@ -108,8 +113,9 @@ impl Actor for Network {
         // };
 
         ctx.spawn(
-            (async move { run_swarm_loop(swarm, command_receiver, network_addr).await })
-                .into_actor(self),
+            (async move { run_swarm_loop(swarm, command_receiver, network_addr).await }).into_actor(
+                self
+            )
         );
     }
 }
@@ -119,10 +125,12 @@ impl Handler<ConsensusMessage> for Network {
 
     fn handle(&mut self, msg: ConsensusMessage, ctx: &mut Self::Context) -> Self::Result {
         if let Some(sender) = &mut self.command_sender {
-            if let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame {
-                peer_ids: self.peer_ids.clone(),
-                msg: vec![],
-            }) {
+            if
+                let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame {
+                    peer_ids: self.peer_ids.clone(),
+                    msg: vec![],
+                })
+            {
                 eprintln!("Failed to send dial command: {:?}", e);
             }
         } else {
@@ -145,18 +153,15 @@ impl Default for Network {
         let peer_id = PeerId::from(id_keys.public());
         println!("Local peer id: {peer_id}");
 
-        let swarm = libp2p::SwarmBuilder::with_new_identity()
+        let swarm = libp2p::SwarmBuilder
+            ::with_new_identity()
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)
             .expect("msg")
             .with_behaviour(|key| {
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
-                    key.public().to_peer_id(),
+                    key.public().to_peer_id()
                 )?;
 
                 let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
@@ -185,7 +190,7 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    network_addr: Addr<Network>,
+    network_addr: Addr<Network>
 ) {
     loop {
         select! {
@@ -263,7 +268,7 @@ async fn run_swarm_loop(
                                 match message {
 
                                     request_response::Message::Request { channel, request, .. } => {
-                                        println!("Received request from {}: {:?}", peer, request);
+                                       println!("Received request from {}: {:?}", peer, request);
 
                                        match network_addr.send(NetworkEventMessage::Request(peer, "hello".to_string())).await {
                                             Ok(response) => {
@@ -286,6 +291,16 @@ async fn run_swarm_loop(
 
                                     request_response::Message::Response { request_id, response } => {
                                         println!("Received response for request {}: {:?}", request_id, response);
+
+                                        match network_addr.send(NetworkEventMessage::Response(peer, "Received response".to_string())).await {
+                                            Ok(response) => {
+                                                println!("✅ Received response: {:?}", response);
+                                                // Process the response data here
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("⚠️ NetworkEventMessage Error: {:?}", e);
+                                            }
+                                        }
                                         // match network_addr.send(NetWorkEvent(response.0)).await {
                                         //     Ok(result) => if let Ok(message) = result {
                                         //        println!("{:?}", message);
@@ -337,8 +352,13 @@ impl Handler<NetworkEventMessage> for Network {
                 Ok(response.to_uppercase())
             }
             NetworkEventMessage::Response(peer_id, message) => {
-                let response = format!("Processed request: {}", message);
-                Ok(response)
+                println!("message from {} for request {}", peer_id, message);
+                if message.is_empty() {
+                    return Err(NetworkError::InvalidData);
+                }
+
+                let response = format!("Processed request: {} and {}", message, peer_id);
+                Ok(response.to_uppercase())
             }
         }
     }
