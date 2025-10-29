@@ -7,11 +7,20 @@ use std::{
     pin::Pin,
 };
 
+use crate::raft::rpc::RaftMessage;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageRequest(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageResponse(pub String);
+
+// New message types that wrap Raft messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NetworkMessage {
+    Raft(RaftMessage),
+    General(String),
+}
 
 #[derive(Clone, Default)]
 pub struct MessageCodec;
