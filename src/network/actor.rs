@@ -172,10 +172,13 @@ impl Default for Network {
             )
             .expect("msg")
             .with_behaviour(|key| {
-                let mdns = mdns::tokio::Behaviour::new(
-                    mdns::Config::default(),
-                    key.public().to_peer_id(),
-                )?;
+                // Configure mDNS with longer TTL to prevent premature peer expiry
+                let mdns_config = mdns::Config {
+                    ttl: std::time::Duration::from_secs(6 * 60), // 6 minutes
+                    query_interval: std::time::Duration::from_secs(5 * 60), // 5 minutes
+                    ..Default::default()
+                };
+                let mdns = mdns::tokio::Behaviour::new(mdns_config, key.public().to_peer_id())?;
 
                 let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
 
@@ -188,7 +191,7 @@ impl Default for Network {
                 })
             })
             .expect("msg")
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(10 * 60))) // 10 minutes
             .build();
 
         Network {
@@ -279,8 +282,14 @@ async fn run_swarm_loop(
 
 
                     SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
+                        // mDNS records expired, but keep existing connections alive
+                        // The peers will be re-discovered in the next mDNS query
                         for (peer_id, _multiaddr) in list {
-                            println!("mDNS discover peer has expired: {peer_id}");
+                            tracing::debug!("mDNS peer expired (will re-discover): {peer_id}");
+                            // NOTE: We intentionally do NOT close the connection here
+                            // libp2p will maintain the connection until it's explicitly closed
+                            // or fails. mDNS expiry just means the discovery record expired,
+                            // not that the peer is actually gone.
                         }
                     },
 
