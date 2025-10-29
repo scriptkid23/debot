@@ -294,7 +294,17 @@ async fn run_swarm_loop(
 
                                        match request.0 {
                                            NetworkMessage::Raft(raft_msg) => {
-                                               tracing::info!("Received Raft message from {}: {:?}", peer, raft_msg);
+                                               // Check if this is a heartbeat (AppendEntries with no entries)
+                                               let is_heartbeat = matches!(
+                                                   &raft_msg,
+                                                   crate::raft::rpc::RaftMessage::AppendEntries(req) if req.entries.is_empty()
+                                               );
+
+                                               if is_heartbeat {
+                                                   tracing::debug!("Received heartbeat from {}", peer);
+                                               } else {
+                                                   tracing::info!("Received Raft message from {}: {:?}", peer, raft_msg);
+                                               }
 
                                                // Get consensus address dynamically from network actor
                                                match network_addr.send(GetConsensusAddr).await {
@@ -314,7 +324,7 @@ async fn run_swarm_loop(
                                                                    .request_response
                                                                    .send_response(channel, response) {
                                                                    tracing::error!("Failed to send Raft response to {}: {:?}", peer, e);
-                                                               } else {
+                                                               } else if !is_heartbeat {
                                                                    tracing::info!("✅ Sent Raft response to {}", peer);
                                                                }
                                                            }
@@ -347,13 +357,19 @@ async fn run_swarm_loop(
                                        }
                                     }
 
-                                    request_response::Message::Response { request_id, response } => {
-                                        tracing::debug!("✅ Received response for request {} from {}: {:?}", request_id, peer, response);
-
+                                    request_response::Message::Response { request_id: _, response } => {
                                         // Process the response based on message type
                                         match response.0 {
                                             NetworkMessage::Raft(raft_response) => {
-                                                tracing::info!("Received Raft response from {}: {:?}", peer, raft_response);
+                                                // Check if this is a heartbeat response
+                                                let is_heartbeat_response = matches!(
+                                                    &raft_response,
+                                                    crate::raft::rpc::RaftMessage::AppendEntriesResponse(_)
+                                                );
+
+                                                if !is_heartbeat_response {
+                                                    tracing::info!("Received Raft response from {}: {:?}", peer, raft_response);
+                                                }
 
                                                 // Forward response to Consensus for processing
                                                 match network_addr.send(GetConsensusAddr).await {

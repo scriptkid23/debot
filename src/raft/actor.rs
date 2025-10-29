@@ -95,6 +95,8 @@ pub struct RaftActor {
     heartbeat_timeout_handle: Option<SpawnHandle>,
     // Address to send outgoing RPC messages (will be set by network layer)
     network_addr: Option<Recipient<SendRaftMessage>>,
+    // Counter for heartbeats sent (for periodic logging)
+    heartbeat_count: u64,
 }
 
 /// Message to send Raft RPC to network layer
@@ -146,6 +148,7 @@ impl RaftActor {
             election_timeout_handle: None,
             heartbeat_timeout_handle: None,
             network_addr: None,
+            heartbeat_count: 0,
         }
     }
 
@@ -242,10 +245,32 @@ impl RaftActor {
         }
 
         if let Some(network_addr) = &self.network_addr {
+            self.heartbeat_count += 1;
+
+            // Log status every 100 heartbeats (~5 seconds at 50ms interval)
+            if self.heartbeat_count % 100 == 0 {
+                tracing::info!(
+                    "💓 Leader {} healthy - {} peers, term {}, commit_index {}",
+                    self.state.node_id,
+                    self.peers.len(),
+                    self.state.current_term,
+                    self.state.commit_index
+                );
+            }
+
             for peer in &self.peers {
                 if peer != &self.state.node_id {
                     match create_append_entries(&self.state, self.log_storage.as_ref(), peer) {
                         Ok(request) => {
+                            // Only log if there are actual entries (not just heartbeat)
+                            if !request.entries.is_empty() {
+                                tracing::info!(
+                                    "Sending {} log entries to {}",
+                                    request.entries.len(),
+                                    peer
+                                );
+                            }
+
                             network_addr.do_send(SendRaftMessage {
                                 to: peer.clone(),
                                 message: RaftMessage::AppendEntries(request),
@@ -418,7 +443,7 @@ impl Handler<HeartbeatTimeout> for RaftActor {
             return;
         }
 
-        tracing::debug!("Leader {} sending heartbeats", self.state.node_id);
+        // Heartbeat logging moved to send_heartbeats() - only logs when sending actual entries
         self.send_heartbeats();
     }
 }
