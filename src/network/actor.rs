@@ -294,14 +294,20 @@ async fn run_swarm_loop(
 
                                        match request.0 {
                                            NetworkMessage::Raft(raft_msg) => {
-                                               // Check if this is a heartbeat (AppendEntries with no entries)
+                                               // Check message type for appropriate logging
                                                let is_heartbeat = matches!(
                                                    &raft_msg,
                                                    crate::raft::rpc::RaftMessage::AppendEntries(req) if req.entries.is_empty()
                                                );
+                                               let is_request_vote = matches!(
+                                                   &raft_msg,
+                                                   crate::raft::rpc::RaftMessage::RequestVote(_)
+                                               );
 
                                                if is_heartbeat {
                                                    tracing::debug!("Received heartbeat from {}", peer);
+                                               } else if is_request_vote {
+                                                   tracing::info!("📥 Network received RequestVote from {} - forwarding to Consensus", peer);
                                                } else {
                                                    tracing::info!("Received Raft message from {}: {:?}", peer, raft_msg);
                                                }
@@ -361,13 +367,19 @@ async fn run_swarm_loop(
                                         // Process the response based on message type
                                         match response.0 {
                                             NetworkMessage::Raft(raft_response) => {
-                                                // Check if this is a heartbeat response
+                                                // Check response type for appropriate logging
                                                 let is_heartbeat_response = matches!(
                                                     &raft_response,
                                                     crate::raft::rpc::RaftMessage::AppendEntriesResponse(_)
                                                 );
+                                                let is_vote_response = matches!(
+                                                    &raft_response,
+                                                    crate::raft::rpc::RaftMessage::RequestVoteResponse(_)
+                                                );
 
-                                                if !is_heartbeat_response {
+                                                if is_vote_response {
+                                                    tracing::info!("📬 Network received RequestVoteResponse from {} - forwarding to Consensus", peer);
+                                                } else if !is_heartbeat_response {
                                                     tracing::info!("Received Raft response from {}: {:?}", peer, raft_response);
                                                 }
 
@@ -467,7 +479,7 @@ impl Handler<SwarmEventMessage> for Network {
 
                 if is_new {
                     tracing::info!(
-                        "New connection established with {peer_id}. Total peers: {}",
+                        "🔗 New connection established with {peer_id}. Total peers: {}",
                         self.peer_ids.len()
                     );
 
@@ -477,10 +489,17 @@ impl Handler<SwarmEventMessage> for Network {
                     self.peer_registry.register(peer_id, node_id.clone());
                     tracing::info!("Registered peer {} as node {}", peer_id, node_id);
 
+                    // Log full peer topology for diagnostics
+                    let all_peers = self.peer_registry.all_node_ids();
+                    tracing::info!(
+                        "🌐 Current network topology - Connected peers: {:?}",
+                        all_peers
+                    );
+
                     // Update Raft peers list
                     if let Some(consensus) = &self.consensus_addr {
                         consensus.do_send(crate::consensus::actor::UpdatePeers {
-                            peer_ids: self.peer_registry.all_node_ids(),
+                            peer_ids: all_peers,
                         });
                     }
                 } else {
@@ -492,15 +511,25 @@ impl Handler<SwarmEventMessage> for Network {
                 let was_present = self.peer_ids.remove(&peer_id);
 
                 if was_present {
-                    tracing::info!("Removed {peer_id}. Total peers: {}", self.peer_ids.len());
+                    tracing::info!(
+                        "🔌 Connection closed with {peer_id}. Total peers: {}",
+                        self.peer_ids.len()
+                    );
 
                     // Remove from peer registry
                     self.peer_registry.remove_peer(&peer_id);
 
+                    // Log remaining peer topology for diagnostics
+                    let remaining_peers = self.peer_registry.all_node_ids();
+                    tracing::info!(
+                        "🌐 Network topology after disconnect - Remaining peers: {:?}",
+                        remaining_peers
+                    );
+
                     // Update Raft peers list
                     if let Some(consensus) = &self.consensus_addr {
                         consensus.do_send(crate::consensus::actor::UpdatePeers {
-                            peer_ids: self.peer_registry.all_node_ids(),
+                            peer_ids: remaining_peers,
                         });
                     }
                 } else {
@@ -520,10 +549,25 @@ impl Handler<SendRaftMessage> for Network {
         let peer_id = match self.peer_registry.get_peer_id(&msg.to) {
             Some(peer_id) => peer_id,
             None => {
-                tracing::warn!("Cannot send message to {}: peer not found", msg.to);
+                tracing::warn!(
+                    "❌ Cannot send message to {}: peer not found in registry. Known peers: {:?}",
+                    msg.to,
+                    self.peer_registry.all_node_ids()
+                );
                 return;
             }
         };
+
+        // Check message type for appropriate logging
+        let is_request_vote = matches!(&msg.message, crate::raft::rpc::RaftMessage::RequestVote(_));
+
+        if is_request_vote {
+            tracing::info!(
+                "📮 Network sending RequestVote from local node to {} (peer_id: {})",
+                msg.to,
+                peer_id
+            );
+        }
 
         // Wrap RaftMessage in NetworkMessage
         let network_msg = NetworkMessage::Raft(msg.message.clone());
@@ -536,7 +580,9 @@ impl Handler<SendRaftMessage> for Network {
             }) {
                 tracing::error!("Failed to send Raft message to {}: {:?}", msg.to, e);
             } else {
-                tracing::debug!("Queued Raft message to {}", msg.to);
+                if !is_request_vote {
+                    tracing::debug!("Queued Raft message to {}", msg.to);
+                }
             }
         } else {
             tracing::error!("Command sender not initialized");

@@ -218,21 +218,32 @@ impl RaftActor {
         let request = create_request_vote(&self.state, self.log_storage.as_ref());
 
         tracing::info!(
-            "Node {} starting election for term {}",
+            "🗳️  Node {} starting election for term {} with peers: {:?}",
             self.state.node_id,
-            self.state.current_term
+            self.state.current_term,
+            self.peers
         );
 
         // Send RequestVote to all peers
         if let Some(network_addr) = &self.network_addr {
+            let mut request_count = 0;
             for peer in &self.peers {
                 if peer != &self.state.node_id {
+                    tracing::info!("📤 Sending RequestVote to {}", peer);
                     network_addr.do_send(SendRaftMessage {
                         to: peer.clone(),
                         message: RaftMessage::RequestVote(request.clone()),
                     });
+                    request_count += 1;
                 }
             }
+            if request_count == 0 {
+                tracing::warn!("⚠️  No peers to send RequestVote to!");
+            } else {
+                tracing::info!("Sent RequestVote to {} peers", request_count);
+            }
+        } else {
+            tracing::error!("❌ Network address not set, cannot send RequestVote!");
         }
 
         // Reset election timeout
@@ -325,7 +336,12 @@ impl Handler<SetPeers> for RaftActor {
     type Result = ();
 
     fn handle(&mut self, msg: SetPeers, _ctx: &mut Context<Self>) -> Self::Result {
-        tracing::info!("Setting peers: {:?}", msg.peer_ids);
+        tracing::info!(
+            "🔄 Node {} updating peer list: {:?} (total: {})",
+            self.state.node_id,
+            msg.peer_ids,
+            msg.peer_ids.len()
+        );
         self.peers = msg.peer_ids;
     }
 }
