@@ -4,23 +4,24 @@
 // Step 3: The receiving node’s Request Layer captures the request and forwards it to the Response Layer.
 // Step 4: The Response Layer processes the request, generates a response, and restarts the cycle.
 
-use std::{ collections::HashSet, time::Duration, vec };
+use std::{collections::HashSet, time::Duration, vec};
 
 use crate::{
-    consensus::actor::{ Consensus, Network2ConsensusRequest },
-    network::{ self, behaviour::BehaviourEvent, codec::{ MessageRequest, MessageResponse } },
+    consensus::actor::Consensus,
+    network::{
+        behaviour::BehaviourEvent,
+        codec::{MessageRequest, MessageResponse, NetworkMessage},
+        peer_registry::PeerRegistry,
+    },
+    raft::actor::SendRaftMessage,
 };
 use actix::prelude::*;
-use futures::{ channel::mpsc, StreamExt };
+use futures::{channel::mpsc, StreamExt};
 use libp2p::{
-    mdns,
-    noise,
-    request_response::{ self, Config, ProtocolSupport },
+    mdns, noise,
+    request_response::{self, Config, ProtocolSupport},
     swarm::SwarmEvent,
-    tcp,
-    yamux,
-    PeerId,
-    Swarm,
+    tcp, yamux, PeerId, Swarm,
 };
 use tokio::select;
 
@@ -37,8 +38,14 @@ pub struct ConsensusMessage(pub Vec<u8>);
 enum SwarmCommand {
     ReceiveDataFrame {
         peer_ids: HashSet<PeerId>,
+        #[allow(dead_code)]
         msg: Vec<u8>,
     },
+    SendRaftMessage {
+        peer_id: PeerId,
+        message: NetworkMessage,
+    },
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -71,9 +78,11 @@ pub enum NetworkEventMessage {
 /// Our Actor that manages the libp2p swarm.
 pub struct Network {
     peer_ids: HashSet<PeerId>,
+    peer_registry: PeerRegistry,
     swarm: Option<Swarm<Behaviour>>,
     command_sender: Option<mpsc::Sender<SwarmCommand>>,
     consensus_addr: Option<Addr<Consensus>>,
+    network_addr: Option<Addr<Network>>,
 }
 
 impl Actor for Network {
@@ -84,14 +93,10 @@ impl Actor for Network {
 
         let mut swarm = self.swarm.take().expect("Swarm should be initialized");
 
-        if
-            let Err(e) = swarm.listen_on(
-                "/ip4/0.0.0.0/tcp/0"
-                    .parse()
-                    .unwrap_or_else(|_| {
-                        panic!("Invalid multiaddr provided. Check your configuration.")
-                    })
-            )
+        if let Err(e) =
+            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap_or_else(|_| {
+                panic!("Invalid multiaddr provided. Check your configuration.")
+            }))
         {
             tracing::error!("Failed to start listening: {:?}", e);
         } else {
@@ -101,21 +106,14 @@ impl Actor for Network {
         let (command_sender, command_receiver) = mpsc::channel(32);
 
         self.command_sender = Some(command_sender);
-
         let network_addr = ctx.address();
+        self.network_addr = Some(network_addr.clone());
 
-        // let consensus_addr = match self.consensus_addr.clone() {
-        //     Some(addr) => addr,
-        //     None => {
-        //         tracing::error!("Consensus address is missing");
-        //         return;
-        //     }
-        // };
-
+        // Start swarm loop WITHOUT consensus_addr initially
+        // It will be provided dynamically when messages arrive
         ctx.spawn(
-            (async move { run_swarm_loop(swarm, command_receiver, network_addr).await }).into_actor(
-                self
-            )
+            (async move { run_swarm_loop(swarm, command_receiver, network_addr).await })
+                .into_actor(self),
         );
     }
 }
@@ -123,14 +121,12 @@ impl Actor for Network {
 impl Handler<ConsensusMessage> for Network {
     type Result = ();
 
-    fn handle(&mut self, msg: ConsensusMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: ConsensusMessage, _ctx: &mut Self::Context) -> Self::Result {
         if let Some(sender) = &mut self.command_sender {
-            if
-                let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame {
-                    peer_ids: self.peer_ids.clone(),
-                    msg: vec![],
-                })
-            {
+            if let Err(e) = sender.try_send(SwarmCommand::ReceiveDataFrame {
+                peer_ids: self.peer_ids.clone(),
+                msg: vec![],
+            }) {
                 eprintln!("Failed to send dial command: {:?}", e);
             }
         } else {
@@ -144,6 +140,20 @@ impl Handler<SetConsensusAddr> for Network {
 
     fn handle(&mut self, msg: SetConsensusAddr, _ctx: &mut Self::Context) -> Self::Result {
         self.consensus_addr = Some(msg.0);
+        tracing::info!("✅ Consensus address set in Network actor");
+    }
+}
+
+/// Message to get consensus address
+#[derive(Message)]
+#[rtype(result = "Option<Addr<Consensus>>")]
+struct GetConsensusAddr;
+
+impl Handler<GetConsensusAddr> for Network {
+    type Result = Option<Addr<Consensus>>;
+
+    fn handle(&mut self, _msg: GetConsensusAddr, _ctx: &mut Self::Context) -> Self::Result {
+        self.consensus_addr.clone()
     }
 }
 
@@ -153,15 +163,18 @@ impl Default for Network {
         let peer_id = PeerId::from(id_keys.public());
         println!("Local peer id: {peer_id}");
 
-        let swarm = libp2p::SwarmBuilder
-            ::with_new_identity()
+        let swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
             .expect("msg")
             .with_behaviour(|key| {
                 let mdns = mdns::tokio::Behaviour::new(
                     mdns::Config::default(),
-                    key.public().to_peer_id()
+                    key.public().to_peer_id(),
                 )?;
 
                 let protocols = vec![("/message_protocol/1", ProtocolSupport::Full)];
@@ -181,8 +194,10 @@ impl Default for Network {
         Network {
             swarm: Some(swarm),
             peer_ids: HashSet::new(),
+            peer_registry: PeerRegistry::new(),
             command_sender: None,
             consensus_addr: None,
+            network_addr: None,
         }
     }
 }
@@ -190,7 +205,7 @@ impl Default for Network {
 async fn run_swarm_loop(
     mut swarm: Swarm<Behaviour>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
-    network_addr: Addr<Network>
+    network_addr: Addr<Network>,
 ) {
     loop {
         select! {
@@ -198,15 +213,22 @@ async fn run_swarm_loop(
 
             cmd = cmd_rx.next() => {
                 match cmd {
-                    Some(SwarmCommand::ReceiveDataFrame {  peer_ids, msg }) => {
+                    Some(SwarmCommand::ReceiveDataFrame {  peer_ids, msg: _ }) => {
                         if peer_ids.is_empty() {
-                            println!("No peers received.");
+                            tracing::debug!("No peers to send to.");
                         } else {
                             for peer in peer_ids {
-                               let request = MessageRequest(peer.to_string());
+                               // Send heartbeat as default message
+                               let request = MessageRequest(NetworkMessage::Heartbeat);
                                swarm.behaviour_mut().request_response.send_request(&peer, request);
                             }
                         }
+                    }
+
+                    Some(SwarmCommand::SendRaftMessage { peer_id, message }) => {
+                        tracing::debug!("Sending Raft message to {}", peer_id);
+                        let request = MessageRequest(message);
+                        swarm.behaviour_mut().request_response.send_request(&peer_id, request);
                     }
 
                     Some(SwarmCommand::Shutdown) => {
@@ -268,61 +290,117 @@ async fn run_swarm_loop(
                                 match message {
 
                                     request_response::Message::Request { channel, request, .. } => {
-                                       println!("Received request from {}: {:?}", peer, request);
+                                       tracing::debug!("Received request from {}: {:?}", peer, request);
 
-                                       match network_addr.send(NetworkEventMessage::Request(peer, "hello".to_string())).await {
-                                            Ok(response) => {
-                                                println!("✅ Received response: {:?}", response);
-                                                // Process the response data here
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("⚠️ NetworkEventMessage Error: {:?}", e);
-                                            }
-                                        }
+                                       match request.0 {
+                                           NetworkMessage::Raft(raft_msg) => {
+                                               tracing::info!("Received Raft message from {}: {:?}", peer, raft_msg);
 
-                                        // if let Err(e) = swarm.behaviour_mut().request_response.send_response(
-                                        //                     channel,
-                                        //                     MessageResponse(request.0)
-                                        //                 ) {
-                                        //                     eprintln!("Failed to send response: {:?}", e);
-                                        //                 }
+                                               // Get consensus address dynamically from network actor
+                                               match network_addr.send(GetConsensusAddr).await {
+                                                   Ok(Some(consensus)) => {
+                                                       // Convert PeerId to NodeId
+                                                       let from_node_id = format!("node-{}", peer);
 
+                                                       // Forward to Consensus for processing
+                                                       match consensus.send(crate::consensus::actor::HandleIncomingRaftMessage {
+                                                           from: from_node_id,
+                                                           message: raft_msg,
+                                                       }).await {
+                                                           Ok(Ok(response_msg)) => {
+                                                               // Send Raft response back
+                                                               let response = MessageResponse(NetworkMessage::Raft(response_msg));
+                                                               if let Err(e) = swarm.behaviour_mut()
+                                                                   .request_response
+                                                                   .send_response(channel, response) {
+                                                                   tracing::error!("Failed to send Raft response to {}: {:?}", peer, e);
+                                                               } else {
+                                                                   tracing::info!("✅ Sent Raft response to {}", peer);
+                                                               }
+                                                           }
+                                                           Ok(Err(e)) => {
+                                                               tracing::error!("Consensus error processing Raft message: {}", e);
+                                                           }
+                                                           Err(e) => {
+                                                               tracing::error!("Failed to forward to Consensus: {:?}", e);
+                                                           }
+                                                       }
+                                                   }
+                                                   Ok(None) => {
+                                                       tracing::warn!("Consensus layer not initialized, dropping Raft message");
+                                                   }
+                                                   Err(e) => {
+                                                       tracing::error!("Failed to get consensus address: {:?}", e);
+                                                   }
+                                               }
+                                           }
+                                           NetworkMessage::Heartbeat => {
+                                               // Simple heartbeat response
+                                               tracing::debug!("Received heartbeat from {}", peer);
+                                               let response = MessageResponse(NetworkMessage::Heartbeat);
+                                               if let Err(e) = swarm.behaviour_mut()
+                                                   .request_response
+                                                   .send_response(channel, response) {
+                                                   tracing::error!("Failed to send heartbeat response to {}: {:?}", peer, e);
+                                               }
+                                           }
+                                       }
                                     }
 
                                     request_response::Message::Response { request_id, response } => {
-                                        println!("Received response for request {}: {:?}", request_id, response);
+                                        tracing::debug!("✅ Received response for request {} from {}: {:?}", request_id, peer, response);
 
-                                        match network_addr.send(NetworkEventMessage::Response(peer, "Received response".to_string())).await {
-                                            Ok(response) => {
-                                                println!("✅ Received response: {:?}", response);
-                                                // Process the response data here
+                                        // Process the response based on message type
+                                        match response.0 {
+                                            NetworkMessage::Raft(raft_response) => {
+                                                tracing::info!("Received Raft response from {}: {:?}", peer, raft_response);
+
+                                                // Forward response to Consensus for processing
+                                                match network_addr.send(GetConsensusAddr).await {
+                                                    Ok(Some(consensus)) => {
+                                                        let from_node_id = format!("node-{}", peer);
+
+                                                        // Forward response to Consensus/Raft
+                                                        match consensus.send(crate::consensus::actor::HandleIncomingRaftMessage {
+                                                            from: from_node_id.clone(),
+                                                            message: raft_response,
+                                                        }).await {
+                                                            Ok(Ok(_)) => {
+                                                                tracing::debug!("Raft response processed by consensus");
+                                                            }
+                                                            Ok(Err(e)) => {
+                                                                tracing::error!("Error processing Raft response: {}", e);
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::error!("Failed to forward Raft response: {:?}", e);
+                                                            }
+                                                        }
+                                                    }
+                                                    Ok(None) => {
+                                                        tracing::warn!("Consensus not initialized, dropping Raft response");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to get consensus address: {:?}", e);
+                                                    }
+                                                }
                                             }
-                                            Err(e) => {
-                                                tracing::error!("⚠️ NetworkEventMessage Error: {:?}", e);
+                                            NetworkMessage::Heartbeat => {
+                                                tracing::debug!("Received heartbeat response from {}", peer);
                                             }
                                         }
-                                        // match network_addr.send(NetWorkEvent(response.0)).await {
-                                        //     Ok(result) => if let Ok(message) = result {
-                                        //        println!("{:?}", message);
-                                        //     }
-                                        //     Err(_) => println!("error")
-                                        // }
-
-
                                     }
                                 }
                             }
                             request_response::Event::OutboundFailure { peer, request_id, error } => {
-                                println!("Outbound failure for request {} to {}: {:?}", request_id, peer, error);
-
+                                tracing::error!("⚠️ Outbound failure for request {} to {}: {:?}", request_id, peer, error);
                             }
 
                             request_response::Event::InboundFailure { peer, request_id, error } => {
-                                println!("Inbound failure from {} for request {}: {:?}", peer, request_id, error);
+                                tracing::error!("⚠️ Inbound failure from {} for request {}: {:?}", peer, request_id, error);
                             }
 
                             request_response::Event::ResponseSent { peer, request_id } => {
-                                println!("Response sent to {} for request {}", peer, request_id);
+                                tracing::debug!("Response sent to {} for request {}", peer, request_id);
                             }
                         }
                     },
@@ -340,7 +418,7 @@ async fn run_swarm_loop(
 impl Handler<NetworkEventMessage> for Network {
     type Result = Result<String, NetworkError>;
 
-    fn handle(&mut self, msg: NetworkEventMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: NetworkEventMessage, _ctx: &mut Self::Context) -> Self::Result {
         match msg {
             NetworkEventMessage::Request(peer_id, message) => {
                 println!("message from {} for request {}", peer_id, message);
@@ -366,18 +444,31 @@ impl Handler<NetworkEventMessage> for Network {
 
 impl Handler<SwarmEventMessage> for Network {
     type Result = ();
-    fn handle(&mut self, msg: SwarmEventMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: SwarmEventMessage, _ctx: &mut Self::Context) -> Self::Result {
         match msg {
             SwarmEventMessage::ConnectionEstablished(peer_id) => {
                 let is_new = self.peer_ids.insert(peer_id);
 
                 if is_new {
-                    println!(
+                    tracing::info!(
                         "New connection established with {peer_id}. Total peers: {}",
                         self.peer_ids.len()
                     );
+
+                    // Auto-register peer with NodeId
+                    // For now, use peer_id as node_id (can be improved with peer exchange protocol)
+                    let node_id = format!("node-{}", peer_id);
+                    self.peer_registry.register(peer_id, node_id.clone());
+                    tracing::info!("Registered peer {} as node {}", peer_id, node_id);
+
+                    // Update Raft peers list
+                    if let Some(consensus) = &self.consensus_addr {
+                        consensus.do_send(crate::consensus::actor::UpdatePeers {
+                            peer_ids: self.peer_registry.all_node_ids(),
+                        });
+                    }
                 } else {
-                    println!("Peer {peer_id} was already in the set.");
+                    tracing::debug!("Peer {peer_id} was already in the set.");
                 }
             }
 
@@ -385,12 +476,56 @@ impl Handler<SwarmEventMessage> for Network {
                 let was_present = self.peer_ids.remove(&peer_id);
 
                 if was_present {
-                    println!("Removed {peer_id}. Total peers: {}", self.peer_ids.len());
+                    tracing::info!("Removed {peer_id}. Total peers: {}", self.peer_ids.len());
+
+                    // Remove from peer registry
+                    self.peer_registry.remove_peer(&peer_id);
+
+                    // Update Raft peers list
+                    if let Some(consensus) = &self.consensus_addr {
+                        consensus.do_send(crate::consensus::actor::UpdatePeers {
+                            peer_ids: self.peer_registry.all_node_ids(),
+                        });
+                    }
                 } else {
-                    println!("Peer {peer_id} not found in set.");
+                    tracing::debug!("Peer {peer_id} not found in set.");
                 }
             }
         }
     }
 }
+
+/// Handler for outgoing Raft messages
+impl Handler<SendRaftMessage> for Network {
+    type Result = ();
+
+    fn handle(&mut self, msg: SendRaftMessage, _ctx: &mut Self::Context) -> Self::Result {
+        // Convert NodeId to PeerId
+        let peer_id = match self.peer_registry.get_peer_id(&msg.to) {
+            Some(peer_id) => peer_id,
+            None => {
+                tracing::warn!("Cannot send message to {}: peer not found", msg.to);
+                return;
+            }
+        };
+
+        // Wrap RaftMessage in NetworkMessage
+        let network_msg = NetworkMessage::Raft(msg.message.clone());
+
+        // Send via command channel to swarm loop
+        if let Some(sender) = &mut self.command_sender {
+            if let Err(e) = sender.try_send(SwarmCommand::SendRaftMessage {
+                peer_id,
+                message: network_msg,
+            }) {
+                tracing::error!("Failed to send Raft message to {}: {:?}", msg.to, e);
+            } else {
+                tracing::debug!("Queued Raft message to {}", msg.to);
+            }
+        } else {
+            tracing::error!("Command sender not initialized");
+        }
+    }
+}
+
 impl Network {}

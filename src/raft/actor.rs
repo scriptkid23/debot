@@ -274,6 +274,10 @@ impl Handler<Initialize> for RaftActor {
             .validate()
             .map_err(|e| RaftError::InvalidConfig(e))?;
 
+        // ✅ UPDATE NODE ID from config!
+        self.state.node_id = msg.config.node_id.clone();
+        tracing::info!("Set Raft node_id to: {}", self.state.node_id);
+
         // Initialize storage with configured data directory
         self.log_storage = Box::new(FileLogStorage::new(msg.config.data_dir.join("logs"))?);
         self.state_storage = Box::new(FileStateStorage::new(msg.config.data_dir.join("state"))?);
@@ -331,7 +335,8 @@ impl Handler<HandleRaftMessage> for RaftActor {
             }
 
             RaftMessage::RequestVoteResponse(response) => {
-                let total_nodes = self.peers.len();
+                // Total nodes = peers + self
+                let total_nodes = self.peers.len() + 1;
                 let won_election =
                     handle_request_vote_response(&mut self.state, msg.from, response, total_nodes)?;
 

@@ -4,3 +4,4 @@ pub mod behaviour;
 pub mod codec;
 pub mod libp2p;
 pub mod messages;
+pub mod peer_registry;

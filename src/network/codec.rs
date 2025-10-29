@@ -9,18 +9,18 @@ use std::{
 
 use crate::raft::rpc::RaftMessage;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageRequest(pub String);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageResponse(pub String);
-
-// New message types that wrap Raft messages
+// Network message envelope that can carry different types of messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetworkMessage {
     Raft(RaftMessage),
-    General(String),
+    Heartbeat,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageRequest(pub NetworkMessage);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageResponse(pub NetworkMessage);
 
 #[derive(Clone, Default)]
 pub struct MessageCodec;

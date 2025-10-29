@@ -2,7 +2,11 @@ use actix::prelude::*;
 
 use crate::config::RaftConfig;
 use crate::network::actor::Network;
-use crate::raft::actor::{GetState, Initialize, RaftActor, RaftStateInfo, SetPeers, SubmitCommand};
+use crate::raft::actor::{
+    GetState, HandleRaftMessage, Initialize, RaftActor, RaftStateInfo, SendRaftMessage,
+    SetNetworkAddress, SetPeers, SubmitCommand,
+};
+use crate::raft::rpc::RaftMessage;
 use crate::raft::types::NodeId;
 
 pub struct Consensus {
@@ -41,6 +45,14 @@ pub struct ProposeCommand {
 #[rtype(result = "Option<RaftStateInfo>")]
 pub struct GetConsensusState;
 
+/// Message to handle incoming Raft RPC from network
+#[derive(Message)]
+#[rtype(result = "Result<RaftMessage, String>")]
+pub struct HandleIncomingRaftMessage {
+    pub from: NodeId,
+    pub message: RaftMessage,
+}
+
 #[derive(Debug)]
 pub enum Network2ConsensusRequestError {
     InvalidData,
@@ -54,7 +66,7 @@ pub struct Network2ConsensusRequest(pub String);
 impl Actor for Consensus {
     type Context = Context<Self>;
 
-    fn started(&mut self, ctx: &mut Self::Context) {
+    fn started(&mut self, _ctx: &mut Self::Context) {
         tracing::info!("Starting consensus layer");
 
         // Start Raft actor
@@ -76,7 +88,18 @@ impl Handler<SetNetworkAddr> for Consensus {
     type Result = ();
 
     fn handle(&mut self, msg: SetNetworkAddr, _ctx: &mut Self::Context) -> Self::Result {
-        self.network_addr = Some(msg.0);
+        self.network_addr = Some(msg.0.clone());
+
+        // Wire up network to raft NOW (when network address is available)
+        if let Some(raft) = &self.raft_addr {
+            let network_recipient: Recipient<SendRaftMessage> = msg.0.recipient();
+            raft.do_send(SetNetworkAddress {
+                addr: network_recipient,
+            });
+            tracing::info!("✅ Wired up Network ↔ Raft connection");
+        } else {
+            tracing::warn!("⚠️ Raft actor not started yet, cannot wire up network");
+        }
     }
 }
 
@@ -85,12 +108,14 @@ impl Handler<InitializeConsensus> for Consensus {
 
     fn handle(&mut self, msg: InitializeConsensus, _ctx: &mut Self::Context) -> Self::Result {
         let raft_addr = self.raft_addr.clone();
+        let node_id = msg.config.node_id.clone();
 
         Box::pin(async move {
             if let Some(raft) = raft_addr {
+                tracing::info!("Initializing Raft with node_id: {}", node_id);
                 match raft.send(Initialize { config: msg.config }).await {
                     Ok(Ok(())) => {
-                        tracing::info!("Raft initialized successfully");
+                        tracing::info!("Raft initialized successfully for node {}", node_id);
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Failed to initialize Raft: {:?}", e);
@@ -161,5 +186,40 @@ impl Handler<Network2ConsensusRequest> for Consensus {
     fn handle(&mut self, msg: Network2ConsensusRequest, _ctx: &mut Self::Context) -> Self::Result {
         tracing::debug!("Received data from network: {}", msg.0);
         Ok("Processed network event".to_string())
+    }
+}
+
+impl Handler<HandleIncomingRaftMessage> for Consensus {
+    type Result = ResponseFuture<Result<RaftMessage, String>>;
+
+    fn handle(&mut self, msg: HandleIncomingRaftMessage, _ctx: &mut Self::Context) -> Self::Result {
+        let raft_addr = self.raft_addr.clone();
+
+        Box::pin(async move {
+            if let Some(raft) = raft_addr {
+                match raft
+                    .send(HandleRaftMessage {
+                        from: msg.from.clone(),
+                        message: msg.message,
+                    })
+                    .await
+                {
+                    Ok(Ok(response)) => {
+                        tracing::debug!("Raft processed message from {}", msg.from);
+                        Ok(response)
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Raft error: {:?}", e);
+                        Err(format!("Raft error: {:?}", e))
+                    }
+                    Err(e) => {
+                        tracing::error!("Mailbox error: {:?}", e);
+                        Err(format!("Mailbox error: {:?}", e))
+                    }
+                }
+            } else {
+                Err("Raft not initialized".to_string())
+            }
+        })
     }
 }
