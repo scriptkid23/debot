@@ -19,3 +19,5 @@ Cargo.lock
 /target
 
 raft_state.bin
+
+/data
