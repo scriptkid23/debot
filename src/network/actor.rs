@@ -35,6 +35,12 @@ pub struct SetConsensusAddr(pub Addr<Consensus>);
 #[rtype(result = "()")]
 pub struct ConsensusMessage(pub Vec<u8>);
 
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct BroadcastTestMessage {
+    pub chat_id: i64,
+}
+
 enum SwarmCommand {
     ReceiveDataFrame {
         peer_ids: HashSet<PeerId>,
@@ -44,6 +50,9 @@ enum SwarmCommand {
     SendRaftMessage {
         peer_id: PeerId,
         message: NetworkMessage,
+    },
+    BroadcastTest {
+        chat_id: i64,
     },
     #[allow(dead_code)]
     Shutdown,
@@ -131,6 +140,27 @@ impl Handler<ConsensusMessage> for Network {
             }
         } else {
             eprintln!("Command sender not initialized");
+        }
+    }
+}
+
+impl Handler<BroadcastTestMessage> for Network {
+    type Result = ();
+
+    fn handle(&mut self, msg: BroadcastTestMessage, _ctx: &mut Self::Context) -> Self::Result {
+        tracing::info!(
+            "📡 Broadcasting test message to all peers for chat_id: {}",
+            msg.chat_id
+        );
+
+        if let Some(sender) = &mut self.command_sender {
+            if let Err(e) = sender.try_send(SwarmCommand::BroadcastTest {
+                chat_id: msg.chat_id,
+            }) {
+                tracing::error!("Failed to send broadcast test command: {:?}", e);
+            }
+        } else {
+            tracing::error!("Command sender not initialized");
         }
     }
 }
@@ -232,6 +262,22 @@ async fn run_swarm_loop(
                         tracing::debug!("Sending Raft message to {}", peer_id);
                         let request = MessageRequest(message);
                         swarm.behaviour_mut().request_response.send_request(&peer_id, request);
+                    }
+
+                    Some(SwarmCommand::BroadcastTest { chat_id }) => {
+                        tracing::info!("📡 Broadcasting test message to all peers for chat_id: {}", chat_id);
+                        // Get all connected peers from the swarm
+                        let connected_peers: Vec<_> = swarm.connected_peers().cloned().collect();
+
+                        if connected_peers.is_empty() {
+                            tracing::warn!("No peers to broadcast to");
+                        } else {
+                            for peer in connected_peers {
+                                tracing::debug!("Sending test to peer: {}", peer);
+                                let request = MessageRequest(NetworkMessage::Test(chat_id));
+                                swarm.behaviour_mut().request_response.send_request(&peer, request);
+                            }
+                        }
                     }
 
                     Some(SwarmCommand::Shutdown) => {
@@ -369,12 +415,43 @@ async fn run_swarm_loop(
                                                    tracing::error!("Failed to send heartbeat response to {}: {:?}", peer, e);
                                                }
                                            }
+                                           NetworkMessage::Test(chat_id) => {
+                                               tracing::info!("🔔 Received Test message from {} for chat_id: {}", peer, chat_id);
+
+                                               // Forward to Consensus to trigger bot response
+                                               match network_addr.send(GetConsensusAddr).await {
+                                                   Ok(Some(consensus)) => {
+                                                       consensus.do_send(crate::consensus::actor::HandleTestMessage {
+                                                           chat_id,
+                                                       });
+                                                       tracing::info!("✅ Test message forwarded to Consensus");
+                                                   }
+                                                   Ok(None) => {
+                                                       tracing::warn!("Consensus not initialized, dropping Test message");
+                                                   }
+                                                   Err(e) => {
+                                                       tracing::error!("Failed to get consensus address: {:?}", e);
+                                                   }
+                                               }
+
+                                               // Send ack response
+                                               let response = MessageResponse(NetworkMessage::Heartbeat);
+                                               if let Err(e) = swarm.behaviour_mut()
+                                                   .request_response
+                                                   .send_response(channel, response) {
+                                                   tracing::error!("Failed to send Test response to {}: {:?}", peer, e);
+                                               }
+                                           }
                                        }
                                     }
 
                                     request_response::Message::Response { request_id: _, response } => {
                                         // Process the response based on message type
                                         match response.0 {
+                                            NetworkMessage::Test(_) => {
+                                                // Test responses are just acks, no need to process
+                                                tracing::debug!("Received Test response from {}", peer);
+                                            }
                                             NetworkMessage::Raft(raft_response) => {
                                                 // Check response type for appropriate logging
                                                 let is_heartbeat_response = matches!(

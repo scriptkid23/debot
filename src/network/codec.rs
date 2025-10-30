@@ -14,6 +14,7 @@ use crate::raft::rpc::RaftMessage;
 pub enum NetworkMessage {
     Raft(RaftMessage),
     Heartbeat,
+    Test(i64), // chat_id for Telegram bot test command
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,8 @@
 use actix::prelude::*;
+use tokio::sync::mpsc;
 
 use crate::config::RaftConfig;
-use crate::network::actor::Network;
+use crate::network::actor::{BroadcastTestMessage, Network};
 use crate::raft::actor::{
     GetState, HandleRaftMessage, Initialize, RaftActor, RaftStateInfo, SendRaftMessage,
     SetNetworkAddress, SetPeers, SubmitCommand,
@@ -12,6 +13,7 @@ use crate::raft::types::NodeId;
 pub struct Consensus {
     network_addr: Option<Addr<Network>>,
     raft_addr: Option<Addr<RaftActor>>,
+    bot_test_sender: Option<mpsc::UnboundedSender<i64>>,
 }
 
 /// Message to set the network address
@@ -44,6 +46,32 @@ pub struct ProposeCommand {
 #[derive(Message)]
 #[rtype(result = "Option<RaftStateInfo>")]
 pub struct GetConsensusState;
+
+/// Message to check if this node is the leader
+#[derive(Message)]
+#[rtype(result = "bool")]
+pub struct IsLeader;
+
+/// Message to broadcast Test command to all nodes (used by Telegram bot)
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct BroadcastTest {
+    pub chat_id: i64,
+}
+
+/// Message to set the bot test sender (for notifying bot of incoming test messages)
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SetBotTestSender {
+    pub sender: mpsc::UnboundedSender<i64>,
+}
+
+/// Message to handle incoming Test message from network
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct HandleTestMessage {
+    pub chat_id: i64,
+}
 
 /// Message to handle incoming Raft RPC from network
 #[derive(Message)]
@@ -80,6 +108,7 @@ impl Default for Consensus {
         Consensus {
             network_addr: None,
             raft_addr: None,
+            bot_test_sender: None,
         }
     }
 }
@@ -221,5 +250,70 @@ impl Handler<HandleIncomingRaftMessage> for Consensus {
                 Err("Raft not initialized".to_string())
             }
         })
+    }
+}
+
+impl Handler<IsLeader> for Consensus {
+    type Result = ResponseFuture<bool>;
+
+    fn handle(&mut self, _msg: IsLeader, _ctx: &mut Self::Context) -> Self::Result {
+        let raft_addr = self.raft_addr.clone();
+
+        Box::pin(async move {
+            if let Some(raft) = raft_addr {
+                match raft.send(GetState).await {
+                    Ok(state) => state.state == crate::raft::state::NodeState::Leader,
+                    Err(_) => false,
+                }
+            } else {
+                false
+            }
+        })
+    }
+}
+
+impl Handler<BroadcastTest> for Consensus {
+    type Result = ();
+
+    fn handle(&mut self, msg: BroadcastTest, _ctx: &mut Self::Context) -> Self::Result {
+        tracing::info!("📡 Broadcasting test for chat_id: {}", msg.chat_id);
+
+        if let Some(network) = &self.network_addr {
+            // Send Test message to network for broadcasting
+            network.do_send(BroadcastTestMessage {
+                chat_id: msg.chat_id,
+            });
+        } else {
+            tracing::warn!("Network address not set, cannot broadcast test");
+        }
+    }
+}
+
+impl Handler<SetBotTestSender> for Consensus {
+    type Result = ();
+
+    fn handle(&mut self, msg: SetBotTestSender, _ctx: &mut Self::Context) -> Self::Result {
+        self.bot_test_sender = Some(msg.sender);
+        tracing::info!("✅ Bot test sender registered with Consensus");
+    }
+}
+
+impl Handler<HandleTestMessage> for Consensus {
+    type Result = ();
+
+    fn handle(&mut self, msg: HandleTestMessage, _ctx: &mut Self::Context) -> Self::Result {
+        tracing::info!(
+            "🔔 Handling incoming test message for chat_id: {}",
+            msg.chat_id
+        );
+
+        // Notify bot to send "I am follower" message
+        if let Some(sender) = &self.bot_test_sender {
+            if let Err(e) = sender.send(msg.chat_id) {
+                tracing::error!("Failed to send test notification to bot: {:?}", e);
+            }
+        } else {
+            tracing::warn!("Bot test sender not set, cannot notify bot");
+        }
     }
 }

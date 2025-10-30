@@ -56,6 +56,7 @@ cargo build --release
 
 ### **5️⃣ Run the Project**  
 
+Run without Telegram bot:
 ```bash
 cargo run
 ```
@@ -66,11 +67,60 @@ or in release mode (optimized for performance):
 cargo run --release
 ```
 
+Run with Telegram bot (each node needs its own bot token):
+```bash
+cargo run -- --token=<YOUR_BOT_TOKEN>
+```
+
+Example with multiple nodes:
+```bash
+# Terminal 1 - First node with bot
+cargo run -- --token=<BOT_TOKEN_1>
+
+# Terminal 2 - Second node with bot
+cargo run -- --token=<BOT_TOKEN_2>
+
+# Terminal 3 - Third node with bot
+cargo run -- --token=<BOT_TOKEN_3>
+```
+
 ### **6️⃣ Run Tests**  
 
 ```bash
 cargo test
 ```
+
+---
+
+## **🤖 Using the Telegram Bot**
+
+Once the node is running with a bot token, you can interact with it via Telegram:
+
+### **Available Commands**
+
+- `/test` - Check if the node is a leader or follower
+  - **Leader response**: "I am leader" (broadcasts to all followers)
+  - **Follower response**: "I am follower"
+
+### **How it works**
+
+1. Each node runs its own Telegram bot (unique token per node)
+2. When you send `/test` to any bot:
+   - The receiving node checks its role and replies immediately
+   - If it's the **leader**, it broadcasts the test to all other nodes
+   - All **follower** nodes then send "I am follower" to the same chat
+
+This demonstrates the distributed consensus mechanism where:
+- The leader coordinates actions across the cluster
+- All nodes can respond independently but in coordination
+
+### **Getting Bot Tokens**
+
+To create Telegram bot tokens:
+1. Open Telegram and search for [@BotFather](https://t.me/botfather)
+2. Send `/newbot` and follow the instructions
+3. Copy the token provided
+4. Repeat for each node you want to run
 
 ---
 
