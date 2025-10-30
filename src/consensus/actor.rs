@@ -1,10 +1,11 @@
 use actix::prelude::*;
 
+use crate::client::{BroadcastCommand, Client};
 use crate::config::RaftConfig;
 use crate::network::actor::Network;
 use crate::raft::actor::{
     GetState, HandleRaftMessage, Initialize, RaftActor, RaftStateInfo, SendRaftMessage,
-    SetNetworkAddress, SetPeers, SubmitCommand,
+    SetClientAddress, SetNetworkAddress, SetPeers, SubmitCommand,
 };
 use crate::raft::rpc::RaftMessage;
 use crate::raft::types::NodeId;
@@ -12,12 +13,18 @@ use crate::raft::types::NodeId;
 pub struct Consensus {
     network_addr: Option<Addr<Network>>,
     raft_addr: Option<Addr<RaftActor>>,
+    client_addr: Option<Addr<Client>>,
 }
 
 /// Message to set the network address
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct SetNetworkAddr(pub Addr<Network>);
+
+/// Message to set the client address
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SetClientAddr(pub Addr<Client>);
 
 /// Message to initialize consensus with Raft config
 #[derive(Message)]
@@ -80,6 +87,7 @@ impl Default for Consensus {
         Consensus {
             network_addr: None,
             raft_addr: None,
+            client_addr: None,
         }
     }
 }
@@ -99,6 +107,25 @@ impl Handler<SetNetworkAddr> for Consensus {
             tracing::info!("✅ Wired up Network ↔ Raft connection");
         } else {
             tracing::warn!("⚠️ Raft actor not started yet, cannot wire up network");
+        }
+    }
+}
+
+impl Handler<SetClientAddr> for Consensus {
+    type Result = ();
+
+    fn handle(&mut self, msg: SetClientAddr, _ctx: &mut Self::Context) -> Self::Result {
+        self.client_addr = Some(msg.0.clone());
+
+        // Wire up client to raft for command execution
+        if let Some(raft) = &self.raft_addr {
+            let client_recipient: Recipient<BroadcastCommand> = msg.0.recipient();
+            raft.do_send(SetClientAddress {
+                addr: client_recipient,
+            });
+            tracing::info!("✅ Wired up Client ↔ Raft connection for command execution");
+        } else {
+            tracing::warn!("⚠️ Raft actor not started yet, cannot wire up client");
         }
     }
 }

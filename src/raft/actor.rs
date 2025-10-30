@@ -1,5 +1,6 @@
 use actix::prelude::*;
 use rand::Rng;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use super::election::{create_request_vote, handle_request_vote, handle_request_vote_response};
@@ -7,6 +8,7 @@ use super::log::{create_append_entries, handle_append_entries, handle_append_ent
 use super::rpc::{RaftMessage, RequestVoteResponse};
 use super::state::{NodeState, RaftState};
 use super::types::{LogEntry, NodeId};
+use crate::client::BroadcastCommand;
 use crate::config::RaftConfig;
 use crate::storage::{FileLogStorage, FileStateStorage, LogStorage, StateStorage};
 use crate::util::errors::{RaftError, Result};
@@ -95,8 +97,12 @@ pub struct RaftActor {
     heartbeat_timeout_handle: Option<SpawnHandle>,
     // Address to send outgoing RPC messages (will be set by network layer)
     network_addr: Option<Recipient<SendRaftMessage>>,
+    // Address to send commands to client for execution
+    client_addr: Option<Recipient<BroadcastCommand>>,
     // Counter for heartbeats sent (for periodic logging)
     heartbeat_count: u64,
+    // Track last sent request to each peer for handling responses
+    pending_requests: HashMap<NodeId, (u64, usize)>, // (prev_log_index, sent_entries_count)
 }
 
 /// Message to send Raft RPC to network layer
@@ -133,6 +139,13 @@ impl Actor for RaftActor {
     }
 }
 
+/// Set client address for applying committed entries
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SetClientAddress {
+    pub addr: Recipient<BroadcastCommand>,
+}
+
 impl RaftActor {
     pub fn new(node_id: NodeId) -> Self {
         Self {
@@ -144,11 +157,13 @@ impl RaftActor {
                 FileStateStorage::new(std::path::PathBuf::from("./data/state")).unwrap(),
             ),
             config: None,
+            client_addr: None,
             peers: Vec::new(),
             election_timeout_handle: None,
             heartbeat_timeout_handle: None,
             network_addr: None,
             heartbeat_count: 0,
+            pending_requests: HashMap::new(),
         }
     }
 
@@ -248,6 +263,63 @@ impl RaftActor {
 
         // Reset election timeout
         self.reset_election_timeout(ctx);
+    }
+
+    /// Apply committed entries to the state machine
+    fn apply_committed_entries(&mut self) {
+        while self.state.last_applied < self.state.commit_index {
+            self.state.last_applied += 1;
+
+            // Get the entry
+            match self.log_storage.get(self.state.last_applied) {
+                Ok(Some(entry)) => {
+                    tracing::info!(
+                        "📝 Node {} applying entry {} (term {})",
+                        self.state.node_id,
+                        entry.index,
+                        entry.term
+                    );
+
+                    // Try to deserialize as BroadcastCommand
+                    match bincode::deserialize::<BroadcastCommand>(&entry.data) {
+                        Ok(command) => {
+                            tracing::info!(
+                                "🎯 Executing broadcast command: {} from {}",
+                                command.command,
+                                command.from_bot
+                            );
+
+                            // Send to client for execution
+                            if let Some(client_addr) = &self.client_addr {
+                                client_addr.do_send(command);
+                            } else {
+                                tracing::warn!(
+                                    "⚠️  Client address not set, cannot execute command"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "Entry {} is not a BroadcastCommand ({}), skipping",
+                                entry.index,
+                                e
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::error!(
+                        "Entry {} not found in log but should be applied!",
+                        self.state.last_applied
+                    );
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get entry {}: {:?}", self.state.last_applied, e);
+                    break;
+                }
+            }
+        }
     }
 
     fn send_heartbeats(&mut self) {
@@ -354,6 +426,15 @@ impl Handler<SetNetworkAddress> for RaftActor {
     }
 }
 
+impl Handler<SetClientAddress> for RaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: SetClientAddress, _ctx: &mut Context<Self>) -> Self::Result {
+        self.client_addr = Some(msg.addr);
+        tracing::info!("✅ Client address set for command execution");
+    }
+}
+
 impl Handler<HandleRaftMessage> for RaftActor {
     type Result = Result<RaftMessage>;
 
@@ -413,20 +494,52 @@ impl Handler<HandleRaftMessage> for RaftActor {
                     request,
                 )?;
 
+                // Apply committed entries after handling AppendEntries
+                self.apply_committed_entries();
+
                 Ok(RaftMessage::AppendEntriesResponse(response))
             }
 
             RaftMessage::AppendEntriesResponse(response) => {
-                // This is handled asynchronously, just acknowledge
-                // In a real implementation, we'd track which request this responds to
+                // Get tracked request info
+                let (prev_log_index, sent_count) = self
+                    .pending_requests
+                    .get(&msg.from)
+                    .copied()
+                    .unwrap_or((0, 0));
+
+                tracing::debug!(
+                    "Leader {} received AppendEntriesResponse from {}: success={}, sent_count={}, prev_index={}",
+                    self.state.node_id,
+                    msg.from,
+                    response.success,
+                    sent_count,
+                    prev_log_index
+                );
+
+                let old_commit = self.state.commit_index;
+
                 handle_append_entries_response(
                     &mut self.state,
                     self.log_storage.as_ref(),
-                    msg.from,
+                    msg.from.clone(),
                     response.clone(),
-                    0, // We'd need to track this
-                    0, // We'd need to track this
+                    sent_count,
+                    prev_log_index,
                 )?;
+
+                // Log if commit_index advanced
+                if self.state.commit_index > old_commit {
+                    tracing::info!(
+                        "🎉 Leader {} commit_index advanced from {} to {}",
+                        self.state.node_id,
+                        old_commit,
+                        self.state.commit_index
+                    );
+                }
+
+                // Apply committed entries after handling response (leader may have advanced commit_index)
+                self.apply_committed_entries();
 
                 Ok(RaftMessage::AppendEntriesResponse(response))
             }
@@ -484,6 +597,18 @@ impl Handler<SubmitCommand> for RaftActor {
             self.state.node_id,
             next_index
         );
+
+        // If this is a single-node cluster, commit immediately
+        if self.peers.is_empty() {
+            self.state.commit_index = next_index;
+            tracing::info!(
+                "Single-node cluster: Leader {} committed entry {} immediately",
+                self.state.node_id,
+                next_index
+            );
+            // Apply the entry
+            self.apply_committed_entries();
+        }
 
         // Trigger immediate replication
         self.send_heartbeats();

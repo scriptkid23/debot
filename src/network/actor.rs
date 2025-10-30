@@ -260,7 +260,6 @@ async fn run_swarm_loop(
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         network_addr.do_send(SwarmEventMessage::ConnectionEstablished(peer_id));
-
                     }
 
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -324,8 +323,8 @@ async fn run_swarm_loop(
                                                // Get consensus address dynamically from network actor
                                                match network_addr.send(GetConsensusAddr).await {
                                                    Ok(Some(consensus)) => {
-                                                       // Convert PeerId to NodeId
-                                                       let from_node_id = format!("node-{}", peer);
+                                                       // Convert PeerId to NodeId - use peer_id directly as node_id
+                                                       let from_node_id = peer.to_string();
 
                                                        // Forward to Consensus for processing
                                                        match consensus.send(crate::consensus::actor::HandleIncomingRaftMessage {
@@ -369,6 +368,17 @@ async fn run_swarm_loop(
                                                    tracing::error!("Failed to send heartbeat response to {}: {:?}", peer, e);
                                                }
                                            }
+                                           NetworkMessage::ApplicationData(data) => {
+                                               // Application data from client (currently handled via Consensus/Raft)
+                                               tracing::info!("Received application data from {} ({} bytes)", peer, data.len());
+                                               // For now, just acknowledge - actual handling is via Raft
+                                               let response = MessageResponse(NetworkMessage::ApplicationData(vec![]));
+                                               if let Err(e) = swarm.behaviour_mut()
+                                                   .request_response
+                                                   .send_response(channel, response) {
+                                                   tracing::error!("Failed to send application data response to {}: {:?}", peer, e);
+                                               }
+                                           }
                                        }
                                     }
 
@@ -377,7 +387,7 @@ async fn run_swarm_loop(
                                         match response.0 {
                                             NetworkMessage::Raft(raft_response) => {
                                                 // Check response type for appropriate logging
-                                                let is_heartbeat_response = matches!(
+                                                let is_append_entries_response = matches!(
                                                     &raft_response,
                                                     crate::raft::rpc::RaftMessage::AppendEntriesResponse(_)
                                                 );
@@ -388,14 +398,16 @@ async fn run_swarm_loop(
 
                                                 if is_vote_response {
                                                     tracing::info!("📬 Network received RequestVoteResponse from {} - forwarding to Consensus", peer);
-                                                } else if !is_heartbeat_response {
+                                                } else if is_append_entries_response {
+                                                    tracing::info!("📬 Network received AppendEntriesResponse from {} - forwarding to Consensus", peer);
+                                                } else {
                                                     tracing::info!("Received Raft response from {}: {:?}", peer, raft_response);
                                                 }
 
                                                 // Forward response to Consensus for processing
                                                 match network_addr.send(GetConsensusAddr).await {
                                                     Ok(Some(consensus)) => {
-                                                        let from_node_id = format!("node-{}", peer);
+                                                        let from_node_id = peer.to_string();
 
                                                         // Forward response to Consensus/Raft
                                                         match consensus.send(crate::consensus::actor::HandleIncomingRaftMessage {
@@ -423,6 +435,10 @@ async fn run_swarm_loop(
                                             }
                                             NetworkMessage::Heartbeat => {
                                                 tracing::debug!("Received heartbeat response from {}", peer);
+                                            }
+                                            NetworkMessage::ApplicationData(data) => {
+                                                tracing::info!("Received application data response from {} ({} bytes)", peer, data.len());
+                                                // Application data responses handled here if needed
                                             }
                                         }
                                     }
@@ -493,8 +509,8 @@ impl Handler<SwarmEventMessage> for Network {
                     );
 
                     // Auto-register peer with NodeId
-                    // For now, use peer_id as node_id (can be improved with peer exchange protocol)
-                    let node_id = format!("node-{}", peer_id);
+                    // Use peer_id directly as node_id for consistent mapping
+                    let node_id = peer_id.to_string();
                     self.peer_registry.register(peer_id, node_id.clone());
                     tracing::info!("Registered peer {} as node {}", peer_id, node_id);
 

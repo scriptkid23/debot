@@ -14,6 +14,7 @@ use crate::raft::rpc::RaftMessage;
 pub enum NetworkMessage {
     Raft(RaftMessage),
     Heartbeat,
+    ApplicationData(Vec<u8>), // For client/bot messages
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

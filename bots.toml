@@ -1,0 +1,38 @@
+# Debot Multi-Bot Configuration
+# This file configures multiple Telegram bots that will work together in a distributed cluster
+
+[cluster]
+# Prefix for node IDs (will be combined with process ID)
+node_id_prefix = "bot-node"
+
+# Bot configurations
+# Each bot needs a unique name and Telegram bot token
+# Get your bot tokens from @BotFather on Telegram
+
+[[bots]]
+name = "guardian1"
+# Replace with your actual bot token from @BotFather
+token = "YOUR_BOT_TOKEN_1_HERE"
+enabled = true
+
+[[bots]]
+name = "guardian2"
+# Replace with your actual bot token from @BotFather  
+token = "YOUR_BOT_TOKEN_2_HERE"
+enabled = true
+
+[[bots]]
+name = "guardian3"
+# Replace with your actual bot token from @BotFather
+token = "YOUR_BOT_TOKEN_3_HERE"
+# Set to false to disable this bot
+enabled = false
+
+[commands]
+# Command prefix (usually "/" for Telegram)
+prefix = "/"
+
+# List of allowed commands (empty = allow all)
+# Uncomment to restrict commands:
+# allowed = ["send", "status"]
+allowed = []
