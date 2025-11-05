@@ -55,16 +55,31 @@ impl FileLogStorage {
             return Ok(());
         }
 
-        self.logs = bincode::deserialize(&buffer)?;
+        let config = bincode::config::standard();
 
-        tracing::info!("Loaded {} log entries from disk", self.logs.len());
-
-        Ok(())
+        match bincode::serde::decode_from_slice::<Vec<LogEntry>, _>(&buffer, config) {
+            Ok((logs, _)) => {
+                self.logs = logs;
+                tracing::info!("Loaded {} log entries from disk", self.logs.len());
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load log entries (possibly old format): {}. Starting with empty log.",
+                    e
+                );
+                // Delete corrupted/incompatible file
+                let _ = fs::remove_file(&log_path);
+                self.logs = Vec::new();
+                Ok(())
+            }
+        }
     }
 
     fn save_to_disk(&self) -> Result<()> {
         let log_path = self.log_file_path();
-        let encoded = bincode::serialize(&self.logs)?;
+        let config = bincode::config::standard();
+        let encoded = bincode::serde::encode_to_vec(&self.logs, config)?;
 
         let mut file = OpenOptions::new()
             .write(true)
@@ -197,4 +212,3 @@ mod tests {
         assert_eq!(storage.last_index(), 1);
     }
 }
-

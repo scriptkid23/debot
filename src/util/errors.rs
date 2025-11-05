@@ -33,11 +33,16 @@ impl From<io::Error> for RaftError {
     }
 }
 
-impl From<bincode::Error> for RaftError {
-    fn from(err: bincode::Error) -> Self {
+impl From<bincode::error::EncodeError> for RaftError {
+    fn from(err: bincode::error::EncodeError) -> Self {
+        RaftError::SerializationError(err.to_string())
+    }
+}
+
+impl From<bincode::error::DecodeError> for RaftError {
+    fn from(err: bincode::error::DecodeError) -> Self {
         RaftError::SerializationError(err.to_string())
     }
 }
 
 pub type Result<T> = std::result::Result<T, RaftError>;
-

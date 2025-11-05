@@ -1,5 +1,5 @@
 use crate::raft::types::{NodeId, Term};
-use crate::util::errors::{RaftError, Result};
+use crate::util::errors::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -74,20 +74,33 @@ impl FileStateStorage {
             return Ok(PersistentState::default());
         }
 
-        let state: PersistentState = bincode::deserialize(&buffer)?;
+        let config = bincode::config::standard();
 
-        tracing::info!(
-            "Loaded persistent state: term={}, voted_for={:?}",
-            state.current_term,
-            state.voted_for
-        );
-
-        Ok(state)
+        match bincode::serde::decode_from_slice::<PersistentState, _>(&buffer, config) {
+            Ok((state, _)) => {
+                tracing::info!(
+                    "Loaded persistent state: term={}, voted_for={:?}",
+                    state.current_term,
+                    state.voted_for
+                );
+                Ok(state)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load persistent state (possibly old format): {}. Starting fresh.",
+                    e
+                );
+                // Delete corrupted/incompatible file
+                let _ = fs::remove_file(&state_path);
+                Ok(PersistentState::default())
+            }
+        }
     }
 
     fn save_to_disk(&self) -> Result<()> {
         let state_path = self.state_file_path();
-        let encoded = bincode::serialize(&self.state)?;
+        let config = bincode::config::standard();
+        let encoded = bincode::serde::encode_to_vec(&self.state, config)?;
 
         let mut file = OpenOptions::new()
             .write(true)
